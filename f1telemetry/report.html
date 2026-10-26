@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.3/plotly.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #ffffff; --text: #1a1a1a; --muted: #6b6b6b; --line: #e3e3df; --grid: #ececea;
+    --a: #c8102e; --b: #1f6fb2; --delta: #444;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121212; --card: #1c1c1c; --text: #ededed; --muted: #a0a0a0; --line: #2e2e2e; --grid: #2a2a2a;
+      --a: #ff5c6c; --b: #5aa9ff; --delta: #cfcfcf;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121212; --card: #1c1c1c; --text: #ededed; --muted: #a0a0a0; --line: #2e2e2e; --grid: #2a2a2a;
+    --a: #ff5c6c; --b: #5aa9ff; --delta: #cfcfcf;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .kpi .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi .l { color: var(--muted); font-size: 13px; }
+  .pickers { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
+  .pickers label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--card); color: var(--text); }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .scroll { overflow-x: auto; }
+  .faster { color: var(--b); } .slower { color: var(--a); }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title"></h1>
+  <p class="sub" id="subtitle"></p>
+  <div class="kpis" id="kpis"></div>
+
+  <section class="card">
+    <h2>Lap times</h2>
+    <p class="hint">Comparable laps only (no lap 1, no pit-out laps). ✕ marks laps with telemetry dropouts. Click a lap to load it below.</p>
+    <div id="lapchart" style="height:320px"></div>
+  </section>
+
+  <section class="card">
+    <h2>Telemetry by distance</h2>
+    <div class="pickers" id="pickers"></div>
+    <div class="scroll"><table id="sectors"></table></div>
+    <div id="telemetry" style="height:720px"></div>
+  </section>
+
+  <section class="card">
+    <h2>Data quality</h2>
+    <p class="hint" id="qualityhint"></p>
+    <div class="scroll"><table id="quality"></table></div>
+  </section>
+</main>
+
+<script type="application/json" id="data">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById("data").textContent);
+const [A, B] = D.drivers;
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const color = d => css(d === A ? "--a" : "--b");
+const sel = { [A]: D.comparison[A].lap, [B]: D.comparison[B].lap };
+const lapRow = (d, n) => D.laps.find(l => l.Driver === d && l.LapNumber === n);
+const fmt = (x, p = 3) => x == null ? "–" : x.toFixed(p);
+const signed = (x, p = 3) => x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(p);
+
+function base(extra) {
+  return Object.assign({
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: { family: getComputedStyle(document.body).fontFamily, color: css("--muted"), size: 12 },
+    margin: { l: 56, r: 16, t: 8, b: 40 }, legend: { orientation: "h", y: 1.12 },
+  }, extra);
+}
+const axis = extra => Object.assign({ gridcolor: css("--grid"), zerolinecolor: css("--line"), linecolor: css("--line") }, extra);
+
+// Linear interpolation on a sorted x array (Distance is cumulative, so it is sorted).
+function interp(x, xs, ys) {
+  let lo = 0, hi = xs.length - 1;
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[hi]) return ys[hi];
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (xs[m] <= x) lo = m; else hi = m; }
+  return ys[lo] + (ys[hi] - ys[lo]) * (x - xs[lo]) / (xs[hi] - xs[lo]);
+}
+function clean(t) { // drop samples with a missing distance or speed
+  const i = t.Distance.map((x, k) => k).filter(k => t.Distance[k] != null && t.Speed[k] != null);
+  return { x: i.map(k => t.Distance[k]), v: i.map(k => t.Speed[k]) };
+}
+
+function header() {
+  const c = D.comparison;
+  document.getElementById("title").textContent = D.title;
+  document.getElementById("subtitle").textContent = `${A} vs ${B} · fastest comparable lap: ${A} lap ${c[A].lap}, ${B} lap ${c[B].lap}`;
+  const flagged = D.issues.reduce((s, i) => s + i.Count, 0);
+  const faster = c.delta_s < 0 ? B : A;
+  document.getElementById("kpis").innerHTML = [
+    [D.samples.toLocaleString("en"), "telemetry samples"],
+    [D.laps.length, "laps stored"],
+    [flagged, "flagged samples"],
+    [`${faster} ${Math.abs(c.delta_s).toFixed(3)} s`, "faster on best lap"],
+  ].map(([v, l]) => `<div class="card kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+}
+
+function lapChart() {
+  const drop = new Set(D.issues.filter(i => i.Check === "gap_over_1s").map(i => i.Driver + ":" + i.LapNumber));
+  const traces = [];
+  for (const d of D.drivers) {
+    const laps = D.laps.filter(l => l.Driver === d && l.IsAccurate && l.LapTimeS != null).sort((a, b) => a.LapNumber - b.LapNumber);
+    traces.push({ x: laps.map(l => l.LapNumber), y: laps.map(l => l.LapTimeS), name: d, meta: d, mode: "lines+markers",
+      line: { color: color(d), width: 2 }, marker: { size: 5 }, hovertemplate: `${d} lap %{x}: %{y:.3f} s<extra></extra>` });
+    const dl = laps.filter(l => drop.has(d + ":" + l.LapNumber));
+    traces.push({ x: dl.map(l => l.LapNumber), y: dl.map(l => l.LapTimeS), name: `${d} dropouts`, meta: d, mode: "markers",
+      marker: { symbol: "x-thin", size: 9, line: { width: 2, color: color(d) } }, showlegend: false,
+      hovertemplate: `${d} lap %{x}: telemetry dropout<extra></extra>` });
+  }
+  const el = document.getElementById("lapchart");
+  Plotly.react(el, traces, base({ xaxis: axis({ title: "Lap" }), yaxis: axis({ title: "Lap time (s)" }), hovermode: "closest" }),
+    { responsive: true, displayModeBar: false });
+  el.removeAllListeners?.("plotly_click");
+  el.on("plotly_click", e => { const p = e.points[0]; sel[p.data.meta] = p.x; pickers(); telemetry(); });
+}
+
+function pickers() {
+  document.getElementById("pickers").innerHTML = D.drivers.map(d => {
+    const opts = Object.keys(D.traces[d]).map(Number).sort((a, b) => a - b).map(n => {
+      const l = lapRow(d, n) || {};
+      return `<option value="${n}" ${n === sel[d] ? "selected" : ""}>Lap ${n} · ${fmt(l.LapTimeS)} s${l.IsAccurate ? "" : " (not comparable)"}</option>`;
+    }).join("");
+    return `<label><span class="dot" style="background:${color(d)}"></span>${d}<select data-d="${d}">${opts}</select></label>`;
+  }).join("");
+  document.querySelectorAll("#pickers select").forEach(s => s.onchange = () => { sel[s.dataset.d] = +s.value; telemetry(); });
+}
+
+function sectors() {
+  const ra = lapRow(A, sel[A]) || {}, rb = lapRow(B, sel[B]) || {};
+  const cols = [["Lap time", "LapTimeS"], ["S1", "S1"], ["S2", "S2"], ["S3", "S3"]];
+  const stats = d => { const t = D.traces[d][sel[d]];
+    return { top: Math.max(...t.Speed.filter(v => v != null)),
+             full: 100 * t.Throttle.filter(v => v >= 99).length / t.Throttle.length }; };
+  const sa = stats(A), sb = stats(B);
+  const row = (d, r, s) => `<tr><td><span class="dot" style="background:${color(d)}"></span> ${d} · lap ${sel[d]}</td>` +
+    cols.map(([, k]) => `<td>${fmt(r[k])}</td>`).join("") + `<td>${s.top.toFixed(0)}</td><td>${s.full.toFixed(1)}</td></tr>`;
+  const delta = cols.map(([, k]) => { const x = ra[k] != null && rb[k] != null ? rb[k] - ra[k] : null;
+    return `<td class="${x < 0 ? "faster" : x > 0 ? "slower" : ""}">${signed(x)}</td>`; }).join("");
+  document.getElementById("sectors").innerHTML =
+    `<tr><th></th>${cols.map(([h]) => `<th>${h} (s)</th>`).join("")}<th>Top km/h</th><th>Full throttle %</th></tr>` +
+    row(A, ra, sa) + row(B, rb, sb) +
+    `<tr><td>Δ ${B} − ${A}</td>${delta}<td>${signed(sb.top - sa.top, 0)}</td><td>${signed(sb.full - sa.full, 1)}</td></tr>`;
+}
+
+function telemetry() {
+  sectors();
+  const t = { [A]: D.traces[A][sel[A]], [B]: D.traces[B][sel[B]] };
+  const ca = clean(t[A]), cb = clean(t[B]);
+  const len = Math.min(ca.x[ca.x.length - 1], cb.x[cb.x.length - 1]);
+  const grid = Array.from({ length: 500 }, (_, i) => len * i / 499);
+  const delta = grid.map(x => interp(x, cb.x, cb.v) - interp(x, ca.x, ca.v));
+  const rows = [["y", "Speed", "Speed (km/h)"], ["y3", "Throttle", "Throttle (%)"], ["y4", "Brake", "Brake"], ["y5", "nGear", "Gear"]];
+  const traces = [];
+  for (const d of D.drivers) for (const [ax, k] of rows)
+    traces.push({ x: t[d].Distance, y: t[d][k], yaxis: ax, name: d, legendgroup: d, showlegend: ax === "y",
+      line: { color: color(d), width: 1.6, shape: k === "nGear" ? "hv" : "linear" },
+      hovertemplate: `${d} %{y} @ %{x:.0f} m<extra></extra>` });
+  traces.push({ x: grid, y: delta, yaxis: "y2", name: `Δ ${B} − ${A}`, fill: "tozeroy",
+    line: { color: css("--delta"), width: 1.2 }, hovertemplate: `Δ %{y:.1f} km/h @ %{x:.0f} m<extra></extra>` });
+  Plotly.react("telemetry", traces, base({
+    hovermode: "x", margin: { l: 64, r: 16, t: 8, b: 40 },
+    xaxis: axis({ title: "Distance in lap (m)", anchor: "y5" }),
+    yaxis: axis({ title: "Speed (km/h)", domain: [0.54, 1] }),
+    yaxis2: axis({ title: `Δ km/h`, domain: [0.40, 0.50] }),
+    yaxis3: axis({ title: "Throttle %", domain: [0.26, 0.36], range: [-5, 105] }),
+    yaxis4: axis({ title: "Brake", domain: [0.13, 0.22], range: [-5, 105] }),
+    yaxis5: axis({ title: "Gear", domain: [0, 0.10], range: [0, 9] }),
+  }), { responsive: true, displayModeBar: false });
+}
+
+function quality() {
+  const totals = {};
+  for (const i of D.issues) { totals[i.Check] ??= { [A]: 0, [B]: 0, laps: new Set() };
+    totals[i.Check][i.Driver] += i.Count; totals[i.Check].laps.add(i.LapNumber); }
+  const names = Object.keys(totals);
+  document.getElementById("qualityhint").textContent = names.length
+    ? "Samples flagged by each validation check. Checks with no hits are not listed."
+    : "No validation check flagged any sample.";
+  document.getElementById("quality").innerHTML = names.length ? `<tr><th>Check</th><th>${A}</th><th>${B}</th><th>Laps affected</th></tr>` +
+    names.map(n => `<tr><td>${n}</td><td>${totals[n][A]}</td><td>${totals[n][B]}</td><td>${totals[n].laps.size}</td></tr>`).join("") : "";
+}
+
+function render() { header(); lapChart(); pickers(); telemetry(); quality(); }
+render();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { lapChart(); pickers(); telemetry(); });
+</script>
+</body>
+</html>

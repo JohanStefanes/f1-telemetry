@@ -1,0 +1,17 @@
+[project]
+name = "f1-telemetry"
+version = "0.1.0"
+description = "F1 telemetry pipeline: ingest, validate, store and compare car data from OpenF1"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.4",
+    "pandas>=3.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
