@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <meta name="description" content="F1 telemetry pipeline: OpenF1 data, validation, SQLite, lap comparison and a backtested pace prediction.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.3/plotly.min.js"></script>
 <style>
   :root {
@@ -24,7 +27,8 @@
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; scroll-padding-top: 64px; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+         font: 15px/1.55 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         font-feature-settings: "tnum" 1, "cv11" 1; -webkit-font-smoothing: antialiased; }
   a { color: inherit; }
   nav { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); }
   nav .in { max-width: 1100px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; gap: 20px;
@@ -35,8 +39,16 @@
   nav .links a:hover { color: var(--text); }
   nav .gh { font-size: 14px; }
   main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 48px; }
-  .eyebrow { color: var(--muted); font-size: 13px; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 6px; }
-  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; }
+  .eyebrow { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 10px; }
+  h1 { font-size: 46px; line-height: 1.05; letter-spacing: -0.03em; font-weight: 800; margin: 0 0 14px; }
+  h1 .a { color: var(--a); } h1 .b { color: var(--b); } h1 .vs { color: var(--muted); font-weight: 500; }
+  .hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 32px; align-items: center; margin-bottom: 28px; }
+  .hero .buttons { margin-bottom: 0; }
+  .heroviz { padding: 18px 18px 8px; margin: 0; }
+  .heroviz .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .heroviz .big { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; margin-top: 2px; }
+  .heroviz .sub { color: var(--muted); font-size: 13px; }
+  @media (max-width: 860px) { .hero { grid-template-columns: 1fr; gap: 20px; } }
   h2 { font-size: 22px; margin: 0 0 6px; }
   h3 { font-size: 16px; margin: 0 0 8px; }
   .lead { font-size: 17px; max-width: 760px; margin: 0 0 16px; }
@@ -52,9 +64,13 @@
   .pill.bad { color: var(--a); border-color: var(--a); }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
   .grid .card { margin-bottom: 0; }
-  .finding .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
-  .finding .k { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
-  .finding p { margin: 6px 0 0; font-size: 14px; }
+  .finding { position: relative; overflow: hidden; display: flex !important; flex-direction: column; }
+  .finding::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--accent, var(--line)); }
+  .finding .v { font-size: 36px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; white-space: nowrap; }
+  .finding .v small { font-size: 20px; font-weight: 700; margin-left: 2px; }
+  .finding .s { font-weight: 600; font-size: 14px; margin-top: 2px; }
+  .finding .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px; }
+  .finding p { margin: 8px 0 0; font-size: 13.5px; color: var(--muted); flex: 1; }
   .pickers { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
   .pickers label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
@@ -110,7 +126,13 @@
   .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
   footer { max-width: 1100px; margin: 0 auto; padding: 24px 16px 40px; color: var(--muted); font-size: 13px;
            border-top: 1px solid var(--line); }
-  @media (max-width: 600px) { h1 { font-size: 24px; } .finding .v { font-size: 24px; } }
+  @media (max-width: 600px) { h1 { font-size: 34px; } .finding .v { font-size: 30px; } }
+  main { counter-reset: sec; }
+  section.block h2::before { counter-increment: sec; content: "0" counter(sec); display: block; font-size: 12px;
+                             font-weight: 600; letter-spacing: .08em; color: var(--muted); margin-bottom: 2px; }
+  h2 { letter-spacing: -0.015em; }
+  tbody tr:hover td, table tr:hover td { background: var(--soft); }
+  tr.diff td { font-weight: 600; border-bottom: 0; }
 </style>
 </head>
 <body>
@@ -127,12 +149,25 @@
 </div></nav>
 
 <main id="top">
-  <p class="eyebrow">Portfolio project · telemetry data pipeline</p>
-  <h1 id="title"></h1>
-  <p class="lead">A Python pipeline that downloads Formula 1 telemetry from the free OpenF1 API, checks it for errors
-    and turns it into this report. Built by <a href="https://johanstefanes.ch">Johan Stefanes</a>.</p>
-  <p class="asof" id="asof"></p>
-  <div class="buttons"><a class="btn primary" href="https://github.com/JohanStefanes/f1-telemetry">View the code</a></div>
+  <div class="hero">
+    <div>
+      <p class="eyebrow" id="eyebrow"></p>
+      <h1 id="title"></h1>
+      <p class="lead">A Python pipeline that downloads Formula 1 telemetry from the free OpenF1 API, checks it for errors
+        and turns it into this report. Built by <a href="https://johanstefanes.ch">Johan Stefanes</a>.</p>
+      <p class="asof" id="asof"></p>
+      <div class="buttons">
+        <a class="btn primary" href="https://github.com/JohanStefanes/f1-telemetry">View the code</a>
+        <a class="btn" href="#compare">See the lap</a>
+      </div>
+    </div>
+    <a class="card heroviz" href="#compare" style="text-decoration:none">
+      <div class="k" id="herok"></div>
+      <div class="big" id="herobig"></div>
+      <div class="sub" id="herosub"></div>
+      <div id="herochart" style="height:150px"></div>
+    </a>
+  </div>
 
   <section id="findings">
     <div class="grid" id="findingcards"></div>
@@ -251,7 +286,8 @@ const lapRow = (d, n) => D.laps.find(l => l.Driver === d && l.LapNumber === n);
 const fmt = (x, p = 3) => x == null ? "–" : x.toFixed(p);
 const signed = (x, p = 3) => x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(p);
 const $ = id => document.getElementById(id);
-const card = (k, v, text, href) => `<a class="card finding" href="${href}"><div class="k">${k}</div><div class="v">${v}</div><p>${text}</p><span class="go">Details →</span></a>`;
+const card = (k, v, sub, text, href, accent) => `<a class="card finding" href="${href}" style="--accent:${accent}">` +
+  `<div class="k">${k}</div><div class="v">${v}</div><div class="s">${sub}</div><p>${text}</p><span class="go">Details →</span></a>`;
 // Shorter names keep the season chart axis readable.
 const SHORT = { "Miami Gardens": "Miami", "Monte Carlo": "Monaco", "Spa-Francorchamps": "Spa", "Marina Bay": "Singapore",
                 "Yas Marina": "Abu Dhabi", "Lusail": "Qatar" };
@@ -273,6 +309,7 @@ function base(extra) {
     paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
     font: { family: getComputedStyle(document.body).fontFamily, color: css("--muted"), size: 12 },
     margin: { l: 56, r: 16, t: 8, b: 40 }, legend: { orientation: "h", y: 1.12 },
+    hoverlabel: { bgcolor: css("--card"), bordercolor: css("--line"), font: { color: css("--text"), family: getComputedStyle(document.body).fontFamily } },
   }, extra);
 }
 const axis = extra => Object.assign({ gridcolor: css("--grid"), zerolinecolor: css("--line"), linecolor: css("--line") }, extra);
@@ -296,23 +333,26 @@ function findings() {
   const s = c.sector_delta_s.map((x, i) => [Math.abs(x), i + 1]).sort((a, b) => b[0] - a[0])[0];
   const total = count("gap_over_1s"), feed = count("gap_over_1s_feed");
   const passed = D.checks.filter(c => c.Passed).length;
-  $("title").textContent = `${D.title}: ${A} vs ${B}`;
+  $("title").innerHTML = `<span class="a">${A}</span> <span class="vs">vs</span> <span class="b">${B}</span>`;
+  $("eyebrow").textContent = `${D.title} · telemetry data pipeline`;
   const cards = [
-    card("Fastest lap", `${faster} ${Math.abs(c.delta_s).toFixed(2)} s faster`,
-      `Best laps compared (lap ${c[faster].lap}). Most of it, ${s[0].toFixed(2)} s, came in sector ${s[1]}.`, "#compare"),
-    card("Data quality", total ? `${total} dropouts` : "No errors",
-      (total ? `${feed === total ? "All" : feed} caused by the data feed, not the cars. ` : "") +
-      (D.checks.length ? `${passed} of ${D.checks.length} checks against official data pass.` : ""), "#quality"),
+    card("Fastest lap", `${Math.abs(c.delta_s).toFixed(2)}<small>s</small>`, `${faster} faster than ${slower}`,
+      `Best laps compared (lap ${c[faster].lap}). Most of it, ${s[0].toFixed(2)} s, came in sector ${s[1]}.`, "#compare", color(faster)),
+    card("Data quality", `${total}`, total ? `dropouts, ${feed === total ? "all" : feed} from the data feed` : "problems found",
+      `Both cars lost data at the same moments, so the cars’ sensors are fine.` +
+      (D.checks.length ? ` ${passed} of ${D.checks.length} checks against official data pass.` : ""), "#quality", css("--good")),
   ];
   if (S) {
     const p = d => S.prediction.find(r => r.Driver === d);
     const pa = p(A), pb = p(B);
-    if (pa && pb) cards.push(card("Prediction, rest of 2026", `+${((pa.GapPct + pb.GapPct) / 2).toFixed(1)} % off the pace`,
-      `${A} and ${B} expected P${pa.Rank} and P${pb.Rank} on race pace. Tested on past races: ±${S.backtest_mean.ModelErrPct.toFixed(2)} pp.`, "#season"));
+    if (pa && pb) cards.push(card("Rest of 2026", `+${((pa.GapPct + pb.GapPct) / 2).toFixed(1)}<small>%</small>`, "expected gap to the fastest car",
+      `${A} P${pa.Rank} and ${B} P${pb.Rank} on race pace in the ${S.remaining.length} remaining races. Backtest error ±${S.backtest_mean.ModelErrPct.toFixed(2)} pp.`,
+      "#season", css("--muted")));
   }
   const h = headToHead();
-  if (h) cards.push(card("Team-mates", `${B} ${h.b} – ${h.a} ${A}`,
-    `Who had the better race pace, over the ${h.b + h.a} races both finished with enough clean laps.`, "#season"));
+  if (h) cards.push(card("Team-mates", `${h.b}–${h.a}`, `${B} vs ${A} on race pace`,
+    `Who was faster over a whole race, in the ${h.b + h.a} races both finished with enough clean laps.`, "#season",
+    `linear-gradient(90deg, ${color(B)} 50%, ${color(A)} 50%)`));
   $("findingcards").innerHTML = cards.join("");
   const asof = S && S.as_of ? `Data up to the ${S.as_of.Race} race on ${date(S.as_of.Date)}` : "";
   $("asof").textContent = [asof, `report built ${date(D.built)}`].filter(Boolean).join(" · ");
@@ -323,6 +363,19 @@ function headToHead() {
   const g = (d, race) => S.pace.find(r => r.Driver === d && r.Race === race);
   const both = [...new Set(S.pace.map(r => r.Race))].map(r => [g(A, r), g(B, r)]).filter(([a, b]) => a && b);
   return both.length ? { a: both.filter(([a, b]) => a.GapPct < b.GapPct).length, b: both.filter(([a, b]) => b.GapPct < a.GapPct).length } : null;
+}
+
+function hero() {
+  const c = D.comparison, g = lapGap(c[A].lap, c[B].lap), last = g.gap[g.gap.length - 1];
+  const lead = last < 0 ? B : A;
+  $("herok").textContent = `Best laps · time gap along the lap`;
+  $("herobig").innerHTML = `<span style="color:${color(lead)}">${lead}</span> ${Math.abs(last).toFixed(2)} s ahead`;
+  $("herosub").textContent = `${A} lap ${c[A].lap} vs ${B} lap ${c[B].lap}, ${D.title}`;
+  Plotly.react("herochart", [{ x: g.grid, y: g.gap, mode: "lines", fill: "tozeroy", line: { color: color(lead), width: 2.5 },
+    fillcolor: color(lead) + "22", hovertemplate: `%{y:+.2f} s @ %{x:.0f} m<extra></extra>` }],
+    base({ margin: { l: 36, r: 8, t: 4, b: 24 }, showlegend: false, hovermode: "x",
+      xaxis: axis({ showgrid: false, ticksuffix: " m", nticks: 4 }), yaxis: axis({ ticksuffix: " s", nticks: 3, zeroline: true }) }),
+    { responsive: true, displayModeBar: false, staticPlot: false });
 }
 
 function lapChart() {
@@ -370,7 +423,7 @@ function sectors() {
   $("sectors").innerHTML =
     `<tr><th class="l"></th>${cols.map(([h]) => `<th>${h} (s)</th>`).join("")}<th>Top km/h</th><th>Full throttle %</th></tr>` +
     row(A, ra, sa) + row(B, rb, sb) +
-    `<tr><td class="l">Difference</td>${delta}<td>${signed(sb.top - sa.top, 0)}</td><td>${signed(sb.full - sa.full, 1)}</td></tr>`;
+    `<tr class="diff"><td class="l">Difference</td>${delta}<td>${signed(sb.top - sa.top, 0)}</td><td>${signed(sb.full - sa.full, 1)}</td></tr>`;
   const d = ["S1", "S2", "S3"].map(k => ra[k] != null && rb[k] != null ? rb[k] - ra[k] : null);
   const max = Math.max(...d.map(x => Math.abs(x ?? 0))) || 1;
   $("sectorbars").innerHTML = `<h3>Where the time went</h3>` + d.map((x, i) => {
@@ -381,16 +434,17 @@ function sectors() {
   }).join("");
 }
 
-function telemetry() {
-  sectors();
-  const t = { [A]: D.traces[A][sel[A]], [B]: D.traces[B][sel[B]] };
+// Time gap and speed difference along the lap for laps la (driver A) and lb (driver B), on a shared distance grid.
+function lapGap(la, lb) {
+  const lapOf = { [A]: la, [B]: lb };
+  const t = { [A]: D.traces[A][la], [B]: D.traces[B][lb] };
   const c = { [A]: clean(t[A]), [B]: clean(t[B]) };
   // Distance is estimated, so the two laps come out a few metres different in length. Close each lap at the
   // line (the stretch after its last sample, from its lap time) and scale both to the same length, so a
   // corner sits at the same x for both cars and the gap ends at the real lap-time difference.
   const end = {};
   for (const d of D.drivers) {
-    const p = c[d], n = p.x.length - 1, lapTime = (lapRow(d, sel[d]) || {}).LapTimeS;
+    const p = c[d], n = p.x.length - 1, lapTime = (lapRow(d, lapOf[d]) || {}).LapTimeS;
     const tail = lapTime != null ? Math.max(0, lapTime - p.t[n]) : 0;
     end[d] = p.x[n] + p.v[n] / 3.6 * tail;
     p.x.push(end[d]); p.v.push(p.v[n]); p.t.push(p.t[n] + tail);
@@ -403,6 +457,12 @@ function telemetry() {
   const delta = grid.map(x => interp(x, cb.x, cb.v) - interp(x, ca.x, ca.v));
   // Time gap at the same point on track: negative means B got there first.
   const gap = grid.map(x => interp(x, cb.x, cb.t) - interp(x, ca.x, ca.t));
+  return { t, c, k, len, grid, delta, gap };
+}
+
+function telemetry() {
+  sectors();
+  const { t, c, k, len, grid, delta, gap } = lapGap(sel[A], sel[B]);
   const full = $("more").checked;
   const rows = full ? [["y", "Speed"], ["y3", "Throttle"], ["y4", "Brake"], ["y5", "nGear"]] : [["y", "Speed"]];
   const traces = [];
@@ -566,7 +626,7 @@ function season() {
       `<td>${r.NaiveErrPct.toFixed(2)}</td><td>${r.RankErr.toFixed(1)}</td></tr>`).join("");
 }
 
-function charts() { lapChart(); pickers(); telemetry(); tyres(); season(); }
+function charts() { hero(); lapChart(); pickers(); telemetry(); tyres(); season(); }
 findings(); compareText(); quality(); charts();
 $("more").onchange = telemetry;
 // Charts inside closed <details> are drawn at the wrong width; redraw them when opened.
