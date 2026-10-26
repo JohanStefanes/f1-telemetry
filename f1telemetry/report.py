@@ -8,7 +8,7 @@ import pandas as pd
 
 from .pipeline import compare
 
-TRACE_COLS = ["Distance", "Speed", "Throttle", "Brake", "nGear"]
+TRACE_COLS = ["Distance", "TimeInLapS", "Speed", "Throttle", "Brake", "nGear"]
 
 
 def records(df):
@@ -19,7 +19,7 @@ def records(df):
 def build(samples, laps, issues, title):
     drivers = list(samples["Driver"].unique())  # order as stored: deltas are second minus first
     traces = {
-        d: {int(lap): {c: [r[c] for r in records(g[TRACE_COLS].round(1))] for c in TRACE_COLS}
+        d: {int(lap): {c: [r[c] for r in records(g[TRACE_COLS].round({**dict.fromkeys(TRACE_COLS, 1), "TimeInLapS": 3}))] for c in TRACE_COLS}
             for lap, g in samples[samples["Driver"] == d].sort_values("SessionTimeS").groupby("LapNumber")}
         for d in drivers
     }

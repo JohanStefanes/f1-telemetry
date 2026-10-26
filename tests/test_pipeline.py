@@ -8,6 +8,7 @@ def samples(**override):
         "Driver": ["HUL"] * 4,
         "LapNumber": [1] * 4,
         "SessionTimeS": [0.0, 0.25, 0.5, 0.75],
+        "TimeInLapS": [0.0, 0.25, 0.5, 0.75],
         "Distance": [0.0, 20.0, 40.0, 60.0],
         "Speed": [280.0, 290.0, 300.0, 310.0],
         "RPM": [11000.0] * 4,
@@ -36,7 +37,16 @@ def test_out_of_range_and_missing_values_are_flagged():
 
 def test_time_errors_and_dropouts_are_flagged():
     found = checks(samples(SessionTimeS=[0.0, 0.25, 0.25, 2.0]))
-    assert found == {"non_increasing_time": 1, "gap_over_1s": 1}
+    assert found == {"non_increasing_time": 1, "gap_over_1s_car": 1}
+
+
+def test_gap_in_both_cars_at_same_time_is_a_feed_dropout():
+    s = pd.concat([
+        samples(SessionTimeS=[0.0, 0.25, 2.0, 2.25]),                         # gap ends at 2.0 s
+        samples(Driver=["BOR"] * 4, SessionTimeS=[0.1, 0.35, 2.1, 5.0]),      # same gap, plus its own
+    ], ignore_index=True)
+    found = {(d, c): n for d, c, n in validate(s)[["Driver", "Check", "Count"]].itertuples(index=False)}
+    assert found == {("HUL", "gap_over_1s_feed"): 1, ("BOR", "gap_over_1s_feed"): 1, ("BOR", "gap_over_1s_car"): 1}
 
 
 def test_compare_uses_fastest_accurate_lap():
@@ -60,10 +70,11 @@ def test_compare_uses_fastest_accurate_lap():
 
 
 def test_distance_is_integrated_per_lap():
-    car = pd.DataFrame({"LapNumber": [1, 1, 1, 2, 2], "SessionTimeS": [0.0, 1.0, 2.0, 2.0, 3.0],
+    car = pd.DataFrame({"LapNumber": [1, 1, 1, 2, 2], "TimeInLapS": [0.5, 1.5, 2.5, 0.0, 1.0],
                         "Speed": [360.0, 360.0, 180.0, 360.0, 360.0]})
-    # 360 km/h = 100 m/s; distance restarts at 0 on each new lap
-    assert add_distance(car).tolist() == [0.0, 100.0, 150.0, 0.0, 100.0]
+    # 360 km/h = 100 m/s. Lap 1's first sample is 0.5 s past the line (50 m); 360 -> 180 km/h averages 75 m/s.
+    # Distance restarts on each new lap.
+    assert add_distance(car).tolist() == [50.0, 150.0, 225.0, 0.0, 100.0]
 
 
 def test_report_embeds_traces_and_comparison():

@@ -61,7 +61,8 @@
     <h2>Telemetry by distance</h2>
     <div class="pickers" id="pickers"></div>
     <div class="scroll"><table id="sectors"></table></div>
-    <div id="telemetry" style="height:720px"></div>
+    <p class="hint" id="gaphint"></p>
+    <div id="telemetry" style="height:860px"></div>
   </section>
 
   <section class="card">
@@ -101,12 +102,13 @@ function interp(x, xs, ys) {
 }
 function clean(t) { // drop samples with a missing distance or speed
   const i = t.Distance.map((x, k) => k).filter(k => t.Distance[k] != null && t.Speed[k] != null);
-  return { x: i.map(k => t.Distance[k]), v: i.map(k => t.Speed[k]) };
+  return { x: i.map(k => t.Distance[k]), v: i.map(k => t.Speed[k]), t: i.map(k => t.TimeInLapS[k]) };
 }
 
 function header() {
   const c = D.comparison;
   document.getElementById("title").textContent = D.title;
+  document.getElementById("gaphint").textContent = `Top: time gap at each point on track (below zero = ${B} ahead). Then speed, speed difference, throttle, brake and gear.`;
   document.getElementById("subtitle").textContent = `${A} vs ${B} · fastest comparable lap: ${A} lap ${c[A].lap}, ${B} lap ${c[B].lap}`;
   const flagged = D.issues.reduce((s, i) => s + i.Count, 0);
   const faster = c.delta_s < 0 ? B : A;
@@ -119,7 +121,7 @@ function header() {
 }
 
 function lapChart() {
-  const drop = new Set(D.issues.filter(i => i.Check === "gap_over_1s").map(i => i.Driver + ":" + i.LapNumber));
+  const drop = new Set(D.issues.filter(i => i.Check.startsWith("gap_over_1s")).map(i => i.Driver + ":" + i.LapNumber));
   const traces = [];
   for (const d of D.drivers) {
     const laps = D.laps.filter(l => l.Driver === d && l.IsAccurate && l.LapTimeS != null).sort((a, b) => a.LapNumber - b.LapNumber);
@@ -172,22 +174,27 @@ function telemetry() {
   const len = Math.min(ca.x[ca.x.length - 1], cb.x[cb.x.length - 1]);
   const grid = Array.from({ length: 500 }, (_, i) => len * i / 499);
   const delta = grid.map(x => interp(x, cb.x, cb.v) - interp(x, ca.x, ca.v));
+  // Time gap at the same point on track: negative means B got there first.
+  const gap = grid.map(x => interp(x, cb.x, cb.t) - interp(x, ca.x, ca.t));
   const rows = [["y", "Speed", "Speed (km/h)"], ["y3", "Throttle", "Throttle (%)"], ["y4", "Brake", "Brake"], ["y5", "nGear", "Gear"]];
   const traces = [];
   for (const d of D.drivers) for (const [ax, k] of rows)
     traces.push({ x: t[d].Distance, y: t[d][k], yaxis: ax, name: d, legendgroup: d, showlegend: ax === "y",
       line: { color: color(d), width: 1.6, shape: k === "nGear" ? "hv" : "linear" },
       hovertemplate: `${d} %{y} @ %{x:.0f} m<extra></extra>` });
+  traces.push({ x: grid, y: gap, yaxis: "y6", name: `Gap ${B} to ${A}`,
+    line: { color: css("--delta"), width: 2 }, hovertemplate: `gap %{y:+.3f} s @ %{x:.0f} m<extra></extra>` });
   traces.push({ x: grid, y: delta, yaxis: "y2", name: `Δ ${B} − ${A}`, fill: "tozeroy",
     line: { color: css("--delta"), width: 1.2 }, hovertemplate: `Δ %{y:.1f} km/h @ %{x:.0f} m<extra></extra>` });
   Plotly.react("telemetry", traces, base({
     hovermode: "x", margin: { l: 64, r: 16, t: 8, b: 40 },
     xaxis: axis({ title: "Distance in lap (m)", anchor: "y5" }),
-    yaxis: axis({ title: "Speed (km/h)", domain: [0.54, 1] }),
-    yaxis2: axis({ title: `Δ km/h`, domain: [0.40, 0.50] }),
-    yaxis3: axis({ title: "Throttle %", domain: [0.26, 0.36], range: [-5, 105] }),
-    yaxis4: axis({ title: "Brake", domain: [0.13, 0.22], range: [-5, 105] }),
-    yaxis5: axis({ title: "Gear", domain: [0, 0.10], range: [0, 9] }),
+    yaxis6: axis({ title: `Gap (s)`, domain: [0.84, 1], zerolinewidth: 1.5 }),
+    yaxis: axis({ title: "Speed (km/h)", domain: [0.46, 0.81] }),
+    yaxis2: axis({ title: `Δ km/h`, domain: [0.35, 0.43] }),
+    yaxis3: axis({ title: "Throttle %", domain: [0.235, 0.32], range: [-5, 105] }),
+    yaxis4: axis({ title: "Brake", domain: [0.12, 0.205], range: [-5, 105] }),
+    yaxis5: axis({ title: "Gear", domain: [0, 0.09], range: [0, 9] }),
   }), { responsive: true, displayModeBar: false });
 }
 
@@ -197,7 +204,7 @@ function quality() {
     totals[i.Check][i.Driver] += i.Count; totals[i.Check].laps.add(i.LapNumber); }
   const names = Object.keys(totals);
   document.getElementById("qualityhint").textContent = names.length
-    ? "Samples flagged by each validation check. Checks with no hits are not listed."
+    ? "Samples flagged by each validation check. Checks with no hits are not listed. A gap is “feed” when every car has it at the same moment, “car” when only this car does."
     : "No validation check flagged any sample.";
   document.getElementById("quality").innerHTML = names.length ? `<tr><th>Check</th><th>${A}</th><th>${B}</th><th>Laps affected</th></tr>` +
     names.map(n => `<tr><td>${n}</td><td>${totals[n][A]}</td><td>${totals[n][B]}</td><td>${totals[n].laps.size}</td></tr>`).join("") : "";

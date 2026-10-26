@@ -13,6 +13,7 @@ CHANNELS = ["Speed", "RPM", "nGear", "Throttle", "Brake", "DRS"]
 # (OpenF1 reports 104 for throttle/brake when the value is invalid).
 LIMITS = {"Speed": (0, 380), "RPM": (0, 15500), "nGear": (0, 8), "Throttle": (0, 100), "Brake": (0, 100)}
 MAX_GAP_S = 1.0  # car data arrives at ~4 Hz; a longer gap is a dropout
+MATCH_S = 0.5  # gaps in different cars this close together are the same feed dropout
 
 
 def get(endpoint, **params):
@@ -52,8 +53,9 @@ def load(year, location, session, drivers):
         car["Driver"] = acronym
         car["LapNumber"] = car["LapNumber"].astype(int)
         car["SessionTimeS"] = (car["date"] - start).dt.total_seconds()
+        car["TimeInLapS"] = (car["date"] - car["date_start"]).dt.total_seconds()
         car["Distance"] = add_distance(car)
-        samples.append(car[["Driver", "LapNumber", "SessionTimeS", "Distance", *CHANNELS]])
+        samples.append(car[["Driver", "LapNumber", "SessionTimeS", "TimeInLapS", "Distance", *CHANNELS]])
         laps.append(pd.DataFrame({
             "Driver": acronym,
             "LapNumber": lap["lap_number"].astype(int),
@@ -68,9 +70,14 @@ def load(year, location, session, drivers):
 
 
 def add_distance(car):
-    """Distance in metres within each lap, integrated from speed (km/h) over time."""
-    dt = car.groupby("LapNumber")["SessionTimeS"].diff().fillna(0)
-    return (car["Speed"] / 3.6 * dt).groupby(car["LapNumber"]).cumsum()
+    """Distance in metres from the start line, integrated from speed (km/h) over time in the lap.
+
+    Trapezoid rule between samples; the first sample of a lap counts from the line at its own speed.
+    """
+    lap = car.groupby("LapNumber")
+    dt = lap["TimeInLapS"].diff().fillna(car["TimeInLapS"])
+    v = (car["Speed"] + lap["Speed"].shift().fillna(car["Speed"])) / 2 / 3.6
+    return (v * dt).groupby(car["LapNumber"]).cumsum()
 
 
 def validate(samples):
@@ -82,12 +89,29 @@ def validate(samples):
         checks[f"out_of_range_{col}"] = samples[col].notna() & ~samples[col].between(lo, hi)
     dt = samples.groupby(["Driver", "LapNumber"])["SessionTimeS"].diff()
     checks["non_increasing_time"] = dt <= 0
-    checks["gap_over_1s"] = dt > MAX_GAP_S
+    gap = dt > MAX_GAP_S
+    shared = feed_gaps(samples, gap)
+    checks["gap_over_1s_feed"] = gap & shared
+    checks["gap_over_1s_car"] = gap & ~shared
     rows = []
     for name, mask in checks.items():
         hit = samples.loc[mask, ["Driver", "LapNumber"]].value_counts()
         rows += [(d, int(l), name, int(n)) for (d, l), n in hit.items()]
     return pd.DataFrame(rows, columns=["Driver", "LapNumber", "Check", "Count"])
+
+
+def feed_gaps(samples, gap):
+    """True where a gap appears at the same moment in every other car: the feed dropped out, not this car."""
+    t = samples["SessionTimeS"]
+    drivers = samples["Driver"].unique()
+    shared = pd.Series(False, index=samples.index)
+    if len(drivers) < 2:
+        return shared  # one car alone cannot tell feed from car
+    at = {d: t[gap & (samples["Driver"] == d)].to_numpy() for d in drivers}
+    for i in samples.index[gap]:
+        shared[i] = all(np.abs(at[o] - t[i]).min(initial=np.inf) <= MATCH_S
+                        for o in drivers if o != samples.at[i, "Driver"])
+    return shared
 
 
 def store(db_path, samples, laps, issues):
