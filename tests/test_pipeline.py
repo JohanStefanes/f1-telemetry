@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from f1telemetry import pipeline
-from f1telemetry.pipeline import add_distance, comparable, compare, degradation, load, validate
+from f1telemetry.pipeline import add_distance, comparable, compare, corners, degradation, load, validate
 
 
 def samples(**override):
@@ -104,6 +104,7 @@ def test_load_assigns_samples_to_laps_and_drops_the_rest(monkeypatch):
         "sessions": [{"session_key": 1, "date_start": t(0)}],
         "drivers": [{"name_acronym": "HUL", "driver_number": 27}],
         "pit": [],
+        "location": [{"date": t(10.6), "x": 100, "y": 200}, {"date": t(109.9), "x": 0, "y": 0}],
         "stints": [{"driver_number": 27, "stint_number": 1, "lap_start": 1, "lap_end": 2, "compound": "SOFT", "tyre_age_at_start": 3},
                    {"driver_number": 27, "stint_number": 2, "lap_start": 3, "lap_end": None, "compound": "HARD", "tyre_age_at_start": 0}],
         "laps": [  # lap 1 from the grid, lap 2 a normal lap, lap 3 out of the pits
@@ -123,6 +124,8 @@ def test_load_assigns_samples_to_laps_and_drops_the_rest(monkeypatch):
     assert excluded.to_dict("records") == [{"Driver": "HUL", "Samples": 2, "Invalid": 1}]
     assert laps["Compound"].tolist() == ["SOFT", "SOFT", "HARD"]
     assert laps["TyreAge"].tolist() == [3, 4, 0]  # stint 1 started on tyres 3 laps old
+    # position from the location sample 0.1 s away; 0/0 (garage) is not a position
+    assert samples["X"].tolist()[0] == 100 and samples["X"].isna().tolist()[1:] == [True, True]
 
 
 def test_get_retries_rate_limits_and_caches_raw_data(monkeypatch, tmp_path):
@@ -204,3 +207,14 @@ def test_empty_answers_are_not_cached(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "fetch", lambda url: answers.pop(0))
     assert pipeline.get("laps", session_key=2).empty  # not published yet
     assert pipeline.get("laps", session_key=2).to_dict("records") == [{"lap_number": 1}]  # asked again
+
+
+def test_corners_are_the_slow_points_of_a_lap():
+    x = list(range(0, 3000, 10))
+    # 300 km/h straight with two corners: 90 km/h at 1000 m and 150 km/h at 2200 m
+    v = [300 - max(0, 210 - abs(d - 1000) * 0.7) - max(0, 150 - abs(d - 2200) * 0.5) for d in x]
+    s = pd.DataFrame({"Driver": "HUL", "LapNumber": 2, "Distance": x, "Speed": v})
+    found = corners(s, "HUL", 2)
+    assert [c["Corner"] for c in found] == [1, 2]
+    assert [round(c["Fraction"] * x[-1]) for c in found] == [1000, 2200]
+    assert [round(c["MinKmh"]) for c in found] == [90, 150]

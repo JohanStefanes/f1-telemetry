@@ -44,3 +44,35 @@ def test_backtest_further_ahead_ignores_the_races_in_between():
     assert bt["Race"].tolist() == ["R5"]  # predicted from races 1-3 only
     assert bt.loc[0, "ModelErrPct"] == pytest.approx(0.0)
     assert bt.loc[0, "NaiveErrPct"] == pytest.approx(0.0)  # naive repeats race 3, the last one known
+
+
+def test_season_load_skips_unpublished_races_and_reads_weather(monkeypatch):
+    from f1telemetry import season
+    t = "2026-10-25T20:00:00+00:00"
+    sessions = pd.DataFrame([
+        {"session_key": 1, "location": "Austin", "date_start": t, "date_end": "2026-10-25T22:00:00+00:00", "is_cancelled": False},
+        {"session_key": 2, "location": "Mexico City", "date_start": "2026-11-01T20:00:00+00:00",
+         "date_end": "2026-11-01T22:00:00+00:00", "is_cancelled": False},  # finished, laps not published yet
+    ])
+    api = {
+        "drivers": [{"driver_number": 27, "name_acronym": "HUL", "team_name": "Audi"}],
+        "laps": [{"driver_number": 27, "lap_number": n, "date_start": t, "lap_duration": 100.0, "is_pit_out_lap": False,
+                  "duration_sector_1": 30.0, "duration_sector_2": 30.0, "duration_sector_3": 40.0} for n in (1, 2)],
+        "pit": [], "stints": [],
+        "weather": [{"rainfall": 0, "track_temperature": 30.0}, {"rainfall": 1, "track_temperature": 32.0}],  # 50 % rain
+        "session_result": [{"driver_number": 27, "position": 11, "number_of_laps": 2, "dnf": False, "dns": False, "dsq": False}],
+    }
+
+    def get(endpoint, fresh=False, **params):
+        if endpoint == "sessions":
+            return sessions
+        if params.get("session_key") == 2:
+            return pd.DataFrame()
+        return pd.DataFrame(api[endpoint])
+
+    monkeypatch.setattr(season, "get", get)
+    monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: pd.Timestamp("2026-11-02T08:00:00Z")))
+    table, laps, results = season.load_season(2026)
+    assert table.set_index("Race")["Status"].to_dict() == {"Austin": "done", "Mexico City": "upcoming"}
+    assert table.loc[0, "Wet"] and table.loc[0, "TrackTempC"] == 31.0
+    assert set(laps["Race"]) == {"Austin"} and results["Position"].tolist() == [11]

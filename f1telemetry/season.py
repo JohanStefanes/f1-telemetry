@@ -13,6 +13,7 @@ from .pipeline import get, lap_table, store
 RECENT = 5  # races of form the prediction averages
 MIN_LAPS = 10  # fewer comparable laps (retired, early crash) gives no pace for that race
 FIRST_TEST = 4  # the backtest starts at race 4, so every prediction has at least three races behind it
+WET_SHARE = 0.1  # rain in at least 10 % of the weather readings makes a wet race; a passing shower does not
 MODELS = (3, 5, 8, 99)  # form windows compared in the backtest; 99 means the whole season
 
 
@@ -34,6 +35,7 @@ def races(year):
 def load_season(year):
     """Return (races table, laps of every driver in every completed race, official results)."""
     table, _ = races(year)
+    table["Wet"], table["TrackTempC"] = None, None
     laps, results = [], []
     for r in table[table["Status"] == "done"].itertuples():
         raw = get("laps", session_key=r.SessionKey)
@@ -47,6 +49,11 @@ def load_season(year):
                       get("stints", session_key=r.SessionKey))
         laps.append(t.drop(columns=["DateStart", "DateEnd"])
                      .assign(SessionKey=r.SessionKey, Race=r.Race, Date=r.Date, Team=t["Driver"].map(team)))
+        weather = get("weather", session_key=r.SessionKey)
+        if not weather.empty:
+            table.loc[table["SessionKey"] == r.SessionKey, ["Wet", "TrackTempC"]] = [
+                bool((weather["rainfall"].fillna(0) > 0).mean() >= WET_SHARE),
+                round(float(weather["track_temperature"].mean()), 1)]
         res = get("session_result", session_key=r.SessionKey)
         results.append(pd.DataFrame({
             "SessionKey": r.SessionKey, "Race": r.Race, "Driver": res["driver_number"].map(roster),
@@ -132,6 +139,8 @@ def summary(table, laps):
                       for h, (r, b) in enumerate(zip(remaining.itertuples(), ahead), 1)],
         # Same backtest for other form windows, to show the 5-race choice is not cherry-picked.
         "models": [{"Recent": n, "ErrPct": round(float(backtest(p, recent=n)["ModelErrPct"].mean()), 3)} for n in MODELS],
+        "weather": [{"Race": r.Race, "Wet": bool(r.Wet), "TrackTempC": r.TrackTempC}
+                    for r in done.itertuples() if "Wet" in done and r.Wet is not None and r.Wet == r.Wet],
     }
 
 

@@ -21,6 +21,9 @@ MAX_GAP_S = 1.0  # car data arrives at ~4 Hz; a longer gap is a dropout
 MATCH_S = 0.5  # gaps in different cars this close together are the same feed dropout
 SLOW_LAP = 1.07  # slower than 107 % of the driver's median lap: safety car, VSC or a problem
 MIN_STINT = 5  # comparable laps a stint needs before a degradation slope means anything
+POS_TOL = pd.Timedelta("500ms")  # a position sample further away in time than this is not used
+CORNER_WINDOW_M = 150  # a corner's slowest point is the slowest within this many metres either side
+CORNER_DROP = 0.85  # ... and at least 15 % slower than the fastest point 400 m around it
 
 
 def get(endpoint, fresh=False, **params):
@@ -110,7 +113,8 @@ def load(year, location, session, drivers, s=None):
         car["SessionTimeS"] = (car["date"] - start).dt.total_seconds()
         car["TimeInLapS"] = (car["date"] - car["DateStart"]).dt.total_seconds()
         car["Distance"] = add_distance(car)
-        samples.append(car[["Driver", "LapNumber", "SessionTimeS", "TimeInLapS", "Distance", *CHANNELS]])
+        car = add_position(car, get("location", session_key=key, driver_number=number))
+        samples.append(car[["Driver", "LapNumber", "SessionTimeS", "TimeInLapS", "Distance", *CHANNELS, "X", "Y"]])
     laps = all_laps[all_laps["Driver"].isin(drivers)].drop(columns=["DateStart", "DateEnd"])
     return pd.concat(samples, ignore_index=True), laps.reset_index(drop=True), pd.DataFrame(excluded)
 
@@ -172,6 +176,42 @@ def comparable(laps):
     median = laps.groupby("Driver")["LapTimeS"].transform("median")
     return ((laps["LapNumber"] > 1) & ~laps["PitIn"] & ~laps["PitOut"]
             & (laps["LapTimeS"] <= SLOW_LAP * median))
+
+
+def add_position(car, pos):
+    """Add the car's track position (OpenF1 x/y, arbitrary units) from the nearest location sample in time."""
+    if pos.empty:
+        return car.assign(X=np.nan, Y=np.nan)
+    pos = pos.assign(date=pd.to_datetime(pos["date"], format="ISO8601"))
+    pos = pos[(pos["x"] != 0) | (pos["y"] != 0)].sort_values("date")  # 0/0 is sent while the car is in the garage
+    out = pd.merge_asof(car.sort_values("date"), pos[["date", "x", "y"]].rename(columns={"x": "X", "y": "Y"}),
+                        on="date", direction="nearest", tolerance=POS_TOL)
+    return out.set_index(car.sort_values("date").index).loc[car.index]
+
+
+def corners(samples, driver, lap):
+    """The main braking zones of one lap: where speed bottoms out at least 15 % below the speed around it.
+
+    Fast kinks that barely slow the car are not counted, so the numbers are not the official turn numbers.
+    Returns each zone's position as a fraction of the lap (so it fits any lap of the same track)
+    and its minimum speed.
+    """
+    t = samples[(samples["Driver"] == driver) & (samples["LapNumber"] == lap)].dropna(subset=["Distance", "Speed"])
+    t = t.sort_values("Distance")
+    x, raw = t["Distance"].to_numpy(), t["Speed"].to_numpy()
+    v = t["Speed"].rolling(3, center=True, min_periods=1).mean().to_numpy()  # smoothed only to find the corners
+    if len(x) < 10:
+        return []
+    out = []
+    for i in range(len(x)):
+        if not 50 < x[i] < x[-1] - 50:
+            continue  # the first and last samples sit at the line, where the lap is cut, not in a corner
+        near, around = abs(x - x[i]) <= CORNER_WINDOW_M, abs(x - x[i]) <= 400
+        if v[i] == v[near].min() and v[i] <= CORNER_DROP * v[around].max():
+            if not out or x[i] - out[-1][0] > 2 * CORNER_WINDOW_M:
+                out.append((x[i], raw[near].min()))
+    return [{"Corner": n, "Fraction": round(float(d / x[-1]), 4), "MinKmh": round(float(s), 1)}
+            for n, (d, s) in enumerate(out, 1)]
 
 
 def add_distance(car):

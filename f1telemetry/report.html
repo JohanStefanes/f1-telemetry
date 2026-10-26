@@ -170,6 +170,9 @@
   .forecast { margin: 4px 0 0; font-size: 14px; }
   .forecast .swatch { display: inline-block; width: 22px; height: 12px; border-radius: 3px; vertical-align: -1px;
                       background: color-mix(in srgb, var(--muted) 30%, transparent); margin-right: 6px; }
+  .mapgrid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 16px; align-items: center; }
+  #corners td { white-space: nowrap; }
+  @media (max-width: 860px) { .mapgrid { grid-template-columns: 1fr; } }
   .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
   details summary { cursor: pointer; color: var(--muted); margin-top: 12px; }
   .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
@@ -234,6 +237,15 @@
       <p class="hint" id="gaphint" style="margin-top:12px"></p>
       <div id="telemetry"></div>
       <label class="toggle"><input type="checkbox" id="more"> Also show throttle, brake and gear</label>
+    </div>
+    <div class="card" id="where">
+      <h3>Where on the track</h3>
+      <p class="hint" id="maphint"></p>
+      <div class="mapgrid">
+        <div id="trackmap"></div>
+        <div><div class="scroll"><table id="corners"></table></div>
+          <p class="hint" style="margin-top:8px">Speeds in km/h. Time: won from 300 m before to 150 m after the slowest point.</p></div>
+      </div>
     </div>
     <details class="card more">
       <summary>Lap times and tyre strategy</summary>
@@ -515,7 +527,59 @@ function lapGap(la, lb) {
   return { t, c, k, len, grid, delta, gap };
 }
 
+// Track map coloured by who was faster in each mini-sector, and the main braking zones of the selected laps.
+function where() {
+  const g = lapGap(sel[A], sel[B]), ta = g.t[A];
+  if (!ta.X || !D.corners.length) { $("where").hidden = true; return; }
+  const gapAt = x => interp(x, g.grid, g.gap);
+  const pts = ta.Distance.map((d, i) => [d, ta.X[i], ta.Y[i]]).filter(p => p.every(v => v != null)).map(([d, x, y]) => [d * g.k[A], x, y]);
+  const N = 30, traces = [];
+  for (let i = 0; i < N; i++) {
+    const e0 = g.len * i / N, e1 = g.len * (i + 1) / N, dt = gapAt(e1) - gapAt(e0), who = dt < 0 ? B : A;
+    const seg = pts.filter(p => p[0] >= e0 && p[0] <= e1);
+    const next = pts.find(p => p[0] > e1);
+    if (next) seg.push(next);  // join to the next piece so the line has no holes
+    traces.push({ x: seg.map(p => p[1]), y: seg.map(p => p[2]), mode: "lines", line: { color: color(who), width: 7 },
+      hovertemplate: `${who} faster here by ${Math.abs(dt).toFixed(3)} s<extra></extra>` });
+  }
+  const near = f => pts.reduce((b, p) => Math.abs(p[0] - f * g.len) < Math.abs(b[0] - f * g.len) ? p : b, pts[0]);
+  const zones = D.corners.map(c => near(c.Fraction));
+  traces.push({ x: zones.map(p => p[1]), y: zones.map(p => p[2]), mode: "markers+text", text: D.corners.map(c => c.Corner),
+    textfont: { color: css("--bg"), size: 11 }, marker: { size: 18, color: css("--text") }, hoverinfo: "skip" });
+  traces.push({ x: [pts[0][1]], y: [pts[0][2]], mode: "markers+text", text: ["Start"], textposition: "bottom right",
+    textfont: { color: css("--muted"), size: 11 }, marker: { size: 9, symbol: "square", color: css("--muted") }, hoverinfo: "skip" });
+  Plotly.react("trackmap", traces, base({ showlegend: false, hovermode: "closest", margin: { l: 4, r: 4, t: 4, b: 4 },
+    height: phone() ? 250 : 380,
+    xaxis: { visible: false, fixedrange: true }, yaxis: { visible: false, scaleanchor: "x", fixedrange: true } }),
+    { responsive: true, displayModeBar: false });
+  $("maphint").textContent = `Each piece of track in the colour of the faster driver there (${B} blue, ${A} red). ` +
+    `The numbers are the main braking zones; the table shows what happened in each.`;
+
+  // per braking zone: slowest speed, where each driver braked, and the time won or lost around it
+  const brake = d => { const t = g.t[d]; return t.Distance.map((x, i) => [x * g.k[d], t.Brake[i]]).filter(p => p[0] != null && p[1] != null); };
+  const ba = brake(A), bb = brake(B);
+  // Braking point: start of the braking that runs into the slowest point (walk back from the last brake sample
+  // before it), so an early dab of the brake further up the straight does not count.
+  const brakeAt = (b, x) => {
+    let i = b.findLastIndex(p => p[0] <= x && p[0] >= x - 700 && p[1] > 0);
+    if (i < 0) return null;
+    while (i > 0 && b[i - 1][1] > 0 && b[i - 1][0] >= x - 700) i--;
+    return b[i][0];
+  };
+  const minAt = (d, x) => Math.min(...g.c[d].x.map((v, i) => [v, g.c[d].v[i]]).filter(p => Math.abs(p[0] - x) <= 200).map(p => p[1]));
+  $("corners").innerHTML = `<tr><th class="l">Zone</th><th class="hide-sm">${A} min</th><th class="hide-sm">${B} min</th><th>Time</th><th>Braking</th></tr>` +
+    D.corners.map(c => {
+      const x = c.Fraction * g.len, pa = brakeAt(ba, x), pb = brakeAt(bb, x);
+      const later = pa != null && pb != null ? pb - pa : null, dt = gapAt(x + 150) - gapAt(x - 300);
+      const who = dt < 0 ? B : A;
+      return `<tr><td class="l"><b>${c.Corner}</b></td><td class="hide-sm">${minAt(A, x).toFixed(0)}</td><td class="hide-sm">${minAt(B, x).toFixed(0)}</td>` +
+        `<td style="color:${color(who)}">${who} ${Math.abs(dt).toFixed(2)} s</td>` +
+        `<td>${later == null || Math.abs(later) < 5 ? "same" : `${later > 0 ? B : A} ${Math.abs(later).toFixed(0)} m later`}</td></tr>`;
+    }).join("");
+}
+
 function telemetry() {
+  where();
   sectors();
   const { t, c, k, len, grid, delta, gap } = lapGap(sel[A], sel[B]);
   const full = $("more").checked;
@@ -627,7 +691,8 @@ function season() {
     `A simple model: the average of the last 5 races. Tested on ${S.backtest.length} past races, it was off by ` +
     `±${S.backtest_mean.ModelErrPct.toFixed(2)} percentage points on average.`;
   $("pacehint").textContent = "Lines: how much slower each driver’s typical race lap was than the fastest car’s (2 % is about 2 s " +
-    "on a 100-second lap). Shaded on the right: the forecast for the remaining races, with the range it usually lands in.";
+    "on a 100-second lap). “rain” marks wet races. Shaded on the right: the forecast for the " +
+    "remaining races, with the range it usually lands in.";
   $("pacetitle").textContent = `Race pace of ${A} and ${B}: ${S.races} races so far, ${S.remaining.length} to go`;
   const past = [...new Map(S.pace.map(r => [r.Date, rn(r.Race)])).values()];
   const future = S.remaining.map(r => rn(r.Race));
@@ -649,6 +714,7 @@ function season() {
     hovertemplate: `${x.Driver} %{x}: expected +${x.GapPct.toFixed(1)} % (likely ${lo.toFixed(1)}–${hi.toFixed(1)} %)<extra></extra>` }); }
   $("forecastnote").innerHTML = future.length ? `<span class="swatch"></span><strong>Forecast: about +${mid.toFixed(1)} %</strong>, ` +
     `likely between ${lo.toFixed(1)} and ${hi.toFixed(1)} %, the same for every remaining race.` : "";
+  const wet = (S.weather || []).filter(w => w.Wet).map(w => rn(w.Race)).filter(r => past.includes(r));
   Plotly.react("pacechart", traces, base({ hovermode: "closest",
     xaxis: axis({ categoryorder: "array", categoryarray: [...past, ...future], tickangle: -40, showgrid: false,
       // on a phone every second race name, so the labels do not run into each other
@@ -658,6 +724,8 @@ function season() {
       { type: "rect", xref: "x", yref: "paper", x0, x1, y0: 0, y1: 1, fillcolor: css("--soft"), line: { width: 0 }, layer: "below" },
       { type: "rect", xref: "x", yref: "y", x0, x1, y0: lo, y1: hi, fillcolor: css("--muted"), opacity: 0.18, line: { width: 0 }, layer: "below" },
     ] : [],
+    annotations: wet.map(r => ({ x: r, y: 0, xref: "x", yref: "paper", yanchor: "bottom", text: "rain", showarrow: false,
+      font: { color: css("--b"), size: 10 } })),
   }),
     { responsive: true, displayModeBar: false });
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from .crosscheck import run as crosscheck
-from .pipeline import compare, degradation
+from .pipeline import compare, corners, degradation
 from .season import summary
 
 TRACE_COLS = ["Distance", "TimeInLapS", "Speed", "Throttle", "Brake", "nGear"]
@@ -20,16 +20,20 @@ def records(df):
 
 def build(samples, laps, issues, title, season=None, excluded=None, checks=None):
     drivers = list(samples["Driver"].unique())  # order as stored: deltas are second minus first
+    cols = TRACE_COLS + [c for c in ("X", "Y") if c in samples]  # track position, when the pipeline stored it
+    digits = {**dict.fromkeys(cols, 1), "TimeInLapS": 3, "X": 0, "Y": 0}
     traces = {
-        d: {int(lap): {c: [r[c] for r in records(g[TRACE_COLS].round({**dict.fromkeys(TRACE_COLS, 1), "TimeInLapS": 3}))] for c in TRACE_COLS}
+        d: {int(lap): {c: [r[c] for r in records(g[cols].round(digits))] for c in cols}
             for lap, g in samples[samples["Driver"] == d].sort_values("SessionTimeS").groupby("LapNumber")}
         for d in drivers
     }
+    comparison = compare(samples, laps, *drivers)
     data = {
         "title": title,
         "drivers": drivers,
         "samples": len(samples),
-        "comparison": compare(samples, laps, *drivers),
+        "comparison": comparison,
+        "corners": corners(samples, drivers[0], comparison[drivers[0]]["lap"]),
         "laps": records(laps),
         "issues": records(issues),
         "traces": traces,

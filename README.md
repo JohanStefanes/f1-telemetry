@@ -17,11 +17,13 @@ every race (see [Automatic updates](#automatic-updates)).
 OpenF1 API  →  load  →  validate  →  SQLite  →  compare / predict  →  HTML report
 ```
 
-1. **Load:** car data (speed, RPM, gear, throttle, brake, DRS, ~4 samples per second) for one race, and laps and pit stops for every completed race, from the free [OpenF1](https://openf1.org) API.
+1. **Load:** car data (speed, RPM, gear, throttle, brake, DRS, ~4 samples per second) and track position for one race,
+   and laps, pit stops, tyres, results and weather for every completed race, from the free [OpenF1](https://openf1.org) API.
 2. **Prepare:** assign every sample to its lap and work out distance from the start line using speed over time.
 3. **Validate:** flag bad samples (see below).
 4. **Store:** everything goes into `telemetry.db` (see [Data schema](#data-schema)).
-5. **Compare:** fastest comparable lap of each driver: time gap along the track, sectors, speed, throttle, brake, gear.
+5. **Compare:** fastest comparable lap of each driver: time gap along the track, sectors, speed, throttle, brake,
+   gear, a track map coloured by the faster driver, and what happened in each braking zone.
 6. **Predict:** expected race pace for every remaining race, tested on the races already run.
 
 ## Run it
@@ -63,6 +65,10 @@ Bortoleto's best lap was **1.93 s faster** (both on lap 53), most of it in secto
 | HUL | 100.323 s | 26.732 | 39.915 | 33.676 | 318 km/h |
 | BOR | 98.393 s | 26.364 | 39.010 | 33.019 | 321 km/h |
 
+**Where on the track:** Bortoleto was faster in all seven main braking zones. Hülkenberg often braked
+later (up to 24 m) but carried less speed through the corner, which cost him more than it gained. The seven
+zones account for 1.70 s of the 1.93 s; the rest came on the straights.
+
 **Tyres:** both started on softs and switched to hards; Bortoleto stopped again for softs on lap 50.
 The report shows each stint and its wear (lap time lost per lap on the same set). Wear comes out
 slightly negative, between −0.06 and +0.01 s per lap, because the car gains more from burning fuel
@@ -71,7 +77,8 @@ than it loses from the tyres.
 ## Season and prediction
 
 18 completed 2026 races (Bahrain and Saudi Arabia were cancelled), 20,693 timed laps of all drivers,
-17,431 of them comparable. Over the season, Bortoleto and Hülkenberg are level on race pace: each was
+17,431 of them comparable. Zandvoort and Kuala Lumpur were wet (rain in at least 10 % of the weather readings
+during the race); the report marks them, because rain explains some of the outliers. Over the season, Bortoleto and Hülkenberg are level on race pace: each was
 the faster of the two in 7 of the 14 races both finished with enough clean laps.
 
 **Race pace** is a driver's median comparable lap, as % slower than the fastest driver in that race.
@@ -143,11 +150,12 @@ measured centre line.
 
 | Table | One row per | Columns |
 |---|---|---|
-| `samples` | telemetry sample | Driver, LapNumber, SessionTimeS, TimeInLapS, Distance, Speed, RPM, nGear, Throttle, Brake, DRS |
+| `samples` | telemetry sample | Driver, LapNumber, SessionTimeS, TimeInLapS, Distance, Speed, RPM, nGear, Throttle, Brake, DRS, X, Y (track position) |
 | `laps` | lap of the two compared drivers | Driver, LapNumber, LapTimeS, S1, S2, S3, PitIn, PitOut, TrapKmh, Stint, Compound, TyreAge, IsAccurate |
 | `issues` | driver, lap and failed check | Driver, LapNumber, Check, Count |
 | `excluded` | driver | Driver, Samples (outside the race laps), Invalid (of those) |
-| `races` | 2026 race | SessionKey, Race, Date, Status (done / upcoming) |
+| `meta` | the compared race | Title, Race, Date |
+| `races` | 2026 race | SessionKey, Race, Date, Status (done / upcoming), Wet (rain in at least 10 % of the race), TrackTempC |
 | `season_laps` | lap of any driver in any completed race | the `laps` columns plus SessionKey, Race, Date, Team |
 | `results` | driver in a completed race | SessionKey, Race, Driver, Position, Laps, Finished |
 
@@ -163,7 +171,7 @@ f1telemetry/
   report.py      writes report.html from telemetry.db
   report.html    page template for the report
   __main__.py    command line for one race
-tests/           20 offline tests
+tests/           22 offline tests
 docs/            screenshot for this README
 report.html      the generated report, published on GitHub Pages
 ```
@@ -181,21 +189,22 @@ report.html      the generated report, published on GitHub Pages
 - About 4 samples per second: OpenF1's rate, far below the car's real sensor rate.
 - Distance is estimated from speed, not measured. The report scales both laps to the same length so corners line up, but small bumps in the time gap at braking points remain.
 - Two drivers per telemetry run.
+- Braking zones are found from the speed trace (the speed drops at least 15 % below the speed around it), so fast
+  kinks are not counted and the numbers are not the official turn numbers.
 - The prediction knows nothing about the next track, the weather or car upgrades.
 
 ## Next steps
 
-- Track map from OpenF1's car position data, coloured by the faster driver.
-- Corner-by-corner analysis: braking points and minimum speeds.
-- Weather per race, to explain outliers such as wet races.
 - Use track type (street, high-speed, high-downforce) in the prediction, once there is enough data to learn it.
-- Alert when a feed dropout happens during a live session.
+  With 18 races, each type has too few to learn from without guessing.
+- Alert when a feed dropout happens during a live session. OpenF1 serves live data only with a paid account.
 
 ## Built with
 
-Python 3.12, pandas, numpy, SQLite, Plotly. 20 pytest tests run without internet and cover loading,
+Python 3.12, pandas, numpy, SQLite, Plotly. 22 pytest tests run without internet and cover loading,
 retries and caching, validation, dropout classification, comparable laps, distance, tyre wear, lap
-comparison, race pace, prediction, backtest, cross-checks, picking the latest race and the report.
+comparison, braking zones, track position, race pace, prediction, backtest, cross-checks, weather, picking the
+latest race and the report.
 Every push runs ruff and the tests.
 
 ---
