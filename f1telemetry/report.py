@@ -2,11 +2,14 @@
 import argparse
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
-from .pipeline import compare
+from .crosscheck import run as crosscheck
+from .pipeline import compare, degradation
+from .season import summary
 
 TRACE_COLS = ["Distance", "TimeInLapS", "Speed", "Throttle", "Brake", "nGear"]
 
@@ -16,7 +19,7 @@ def records(df):
     return df.astype(object).where(df.notna(), None).to_dict("records")
 
 
-def build(samples, laps, issues, title):
+def build(samples, laps, issues, title, season=None, excluded=None, checks=None):
     drivers = list(samples["Driver"].unique())  # order as stored: deltas are second minus first
     traces = {
         d: {int(lap): {c: [r[c] for r in records(g[TRACE_COLS].round({**dict.fromkeys(TRACE_COLS, 1), "TimeInLapS": 3}))] for c in TRACE_COLS}
@@ -31,6 +34,11 @@ def build(samples, laps, issues, title):
         "laps": records(laps),
         "issues": records(issues),
         "traces": traces,
+        "stints": records(degradation(laps)) if "Compound" in laps else [],
+        "excluded": records(excluded) if excluded is not None else [],
+        "checks": records(checks) if checks is not None else [],
+        "season": season,
+        "built": date.today().isoformat(),
     }
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     return (Path(__file__).with_name("report.html").read_text()
@@ -45,14 +53,23 @@ def main():
     args = p.parse_args()
     with sqlite3.connect(args.db) as con:
         samples, laps, issues = (read(con, t) for t in ("samples", "laps", "issues"))
-    Path(args.out).write_text(build(samples, laps, issues, args.title))
+        tables = set(pd.read_sql("SELECT name FROM sqlite_master WHERE type = 'table'", con)["name"])
+        excluded = read(con, "excluded") if "excluded" in tables else None
+        season = checks = None
+        # The season section and the cross-checks appear once `python -m f1telemetry.season` has run.
+        if {"races", "season_laps", "results"} <= tables:
+            season_laps, results = read(con, "season_laps"), read(con, "results")
+            season = summary(read(con, "races"), season_laps)
+            checks = crosscheck(samples, laps, season_laps, results)
+    Path(args.out).write_text(build(samples, laps, issues, args.title, season, excluded, checks))
     print(f"Wrote {args.out}")
 
 
 def read(con, table):
     df = pd.read_sql(f"SELECT * FROM {table}", con)
-    if "IsAccurate" in df:
-        df["IsAccurate"] = df["IsAccurate"].astype(bool)  # SQLite stores booleans as 0/1
+    for col in ("IsAccurate", "PitIn", "PitOut", "Finished"):
+        if col in df:
+            df[col] = df[col].astype(bool)  # SQLite stores booleans as 0/1
     return df
 
 

@@ -4,84 +4,223 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
+<meta name="description" content="F1 telemetry pipeline: OpenF1 data, validation, SQLite, lap comparison and a backtested pace prediction.">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.3/plotly.min.js"></script>
 <style>
   :root {
-    --bg: #f6f6f4; --card: #ffffff; --text: #1a1a1a; --muted: #6b6b6b; --line: #e3e3df; --grid: #ececea;
-    --a: #c8102e; --b: #1f6fb2; --delta: #444;
+    --bg: #f6f6f4; --card: #ffffff; --text: #1a1a1a; --muted: #636363; --line: #e3e3df; --grid: #ececea;
+    --a: #c8102e; --b: #1f6fb2; --delta: #444; --good: #1d7a46; --soft: #f0f0ed;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #121212; --card: #1c1c1c; --text: #ededed; --muted: #a0a0a0; --line: #2e2e2e; --grid: #2a2a2a;
-      --a: #ff5c6c; --b: #5aa9ff; --delta: #cfcfcf;
+      --a: #ff5c6c; --b: #5aa9ff; --delta: #cfcfcf; --good: #4cc38a; --soft: #242424;
     }
   }
   :root[data-theme="dark"] {
     --bg: #121212; --card: #1c1c1c; --text: #ededed; --muted: #a0a0a0; --line: #2e2e2e; --grid: #2a2a2a;
-    --a: #ff5c6c; --b: #5aa9ff; --delta: #cfcfcf;
+    --a: #ff5c6c; --b: #5aa9ff; --delta: #cfcfcf; --good: #4cc38a; --soft: #242424;
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 64px; }
   body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 24px; margin: 0 0 4px; }
-  h2 { font-size: 16px; margin: 0 0 12px; }
-  .sub { color: var(--muted); margin: 0 0 20px; }
-  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-  .kpi .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .kpi .l { color: var(--muted); font-size: 13px; }
+         font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  a { color: inherit; }
+  nav { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); }
+  nav .in { max-width: 1100px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; gap: 20px;
+            height: 52px; overflow-x: auto; white-space: nowrap; }
+  nav .brand { font-weight: 700; text-decoration: none; }
+  nav .links { display: flex; gap: 16px; }
+  nav .links a { color: var(--muted); text-decoration: none; font-size: 14px; }
+  nav .links a:hover { color: var(--text); }
+  nav .gh { margin-left: auto; font-size: 14px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 48px; }
+  .eyebrow { color: var(--muted); font-size: 13px; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 6px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; }
+  h2 { font-size: 22px; margin: 0 0 6px; }
+  h3 { font-size: 16px; margin: 0 0 8px; }
+  .lead { font-size: 17px; max-width: 760px; margin: 0 0 16px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 28px; }
+  .btn { display: inline-block; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+         background: var(--card); color: var(--text); text-decoration: none; font: 600 14px/1.4 inherit; cursor: pointer; }
+  .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  section.block { margin-top: 48px; }
+  .intro { color: var(--muted); max-width: 760px; margin: 0 0 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+  #findingcards { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .asof { color: var(--muted); font-size: 13px; margin: -8px 0 16px; }
+  .pill.bad { color: var(--a); border-color: var(--a); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .grid .card { margin-bottom: 0; }
+  .finding .v { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .finding .k { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .finding p { margin: 6px 0 0; font-size: 14px; }
   .pickers { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 8px; }
   .pickers label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   select { font: inherit; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line);
-           background: var(--card); color: var(--text); }
+           background: var(--card); color: var(--text); max-width: 100%; }
   .hint { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-  th:first-child, td:first-child { text-align: left; }
+  th, td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--line); }
   th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.l, th.l { text-align: left; }
+  #stints td, #sectors td { white-space: nowrap; }
   .scroll { overflow-x: auto; }
   .faster { color: var(--b); } .slower { color: var(--a); }
+  tr.pick td { font-weight: 700; background: var(--soft); }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600;
+          border: 1px solid var(--line); white-space: nowrap; }
+  .pill.ok { color: var(--good); border-color: var(--good); }
+  .verdict { border-left: 3px solid var(--good); padding: 4px 0 4px 12px; margin: 12px 0 0; }
+  details.more > summary { color: var(--text); font-weight: 600; margin: 0; }
+  details.more[open] > summary { margin-bottom: 12px; }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; cursor: pointer; }
+  details summary { cursor: pointer; color: var(--muted); margin-top: 12px; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  footer { max-width: 1100px; margin: 0 auto; padding: 24px 16px 40px; color: var(--muted); font-size: 13px;
+           border-top: 1px solid var(--line); }
+  @media (max-width: 600px) { h1 { font-size: 24px; } .finding .v { font-size: 24px; } }
 </style>
 </head>
 <body>
-<main>
+<nav><div class="in">
+  <a class="brand" href="#top">f1-telemetry</a>
+  <div class="links">
+    <a href="#findings">Findings</a><a href="#compare">Lap comparison</a><a href="#quality">Data quality</a>
+    <a href="#season">Prediction</a><a href="#method">How it works</a>
+  </div>
+  <a class="gh" href="https://github.com/JohanStefanes/f1-telemetry">GitHub ↗</a>
+</div></nav>
+
+<main id="top">
+  <p class="eyebrow">Portfolio project · telemetry data pipeline</p>
   <h1 id="title"></h1>
-  <p class="sub" id="subtitle"></p>
-  <div class="kpis" id="kpis"></div>
+  <p class="lead">A Python pipeline that downloads Formula 1 telemetry from the free OpenF1 API, checks it for errors
+    and turns it into this report. Built by <a href="https://johanstefanes.ch">Johan Stefanes</a>.</p>
+  <p class="asof" id="asof"></p>
+  <div class="buttons"><a class="btn primary" href="https://github.com/JohanStefanes/f1-telemetry">View the code</a></div>
 
-  <section class="card">
-    <h2>Lap times</h2>
-    <p class="hint">Comparable laps only (no lap 1, no pit-out laps). ✕ marks laps with telemetry dropouts. Click a lap to load it below.</p>
-    <div id="lapchart" style="height:320px"></div>
+  <section id="findings">
+    <div class="grid" id="findingcards"></div>
   </section>
 
-  <section class="card">
-    <h2>Telemetry by distance</h2>
-    <div class="pickers" id="pickers"></div>
-    <div class="scroll"><table id="sectors"></table></div>
-    <p class="hint" id="gaphint"></p>
-    <div id="telemetry" style="height:860px"></div>
+  <section class="block" id="compare">
+    <h2 id="comparetitle"></h2>
+    <p class="intro" id="compareintro"></p>
+    <div class="card">
+      <div class="pickers" id="pickers"></div>
+      <div class="scroll"><table id="sectors"></table></div>
+      <p class="hint" id="gaphint" style="margin-top:12px"></p>
+      <div id="telemetry"></div>
+      <label class="toggle"><input type="checkbox" id="more"> Also show throttle, brake and gear</label>
+    </div>
+    <details class="card more">
+      <summary>Lap times and tyre strategy</summary>
+      <h3>Lap times over the race</h3>
+      <p class="hint">Comparable laps only: no lap 1, no laps into or out of the pits, no laps slower than 107 % of the
+        driver’s median (safety car, VSC). ✕ marks laps with telemetry dropouts. Click a lap to load it above.</p>
+      <div id="lapchart" style="height:300px"></div>
+      <div id="tyres">
+        <h3 style="margin-top:16px">Tyre strategy and wear</h3>
+        <p class="hint" id="tyrehint"></p>
+        <div id="stintchart" style="height:150px"></div>
+        <div class="scroll"><table id="stints"></table></div>
+      </div>
+    </details>
   </section>
 
-  <section class="card">
+  <section class="block" id="quality">
     <h2>Data quality</h2>
-    <p class="hint" id="qualityhint"></p>
-    <div class="scroll"><table id="quality"></table></div>
+    <p class="intro" id="qualitysummary"></p>
+    <details class="card more">
+      <summary>All checks and results</summary>
+      <h3>Checks on every sample</h3>
+      <div class="scroll"><table id="checks"></table></div>
+      <p class="verdict" id="verdict"></p>
+      <p class="hint" id="excluded" style="margin-top:12px"></p>
+      <div id="crosschecks">
+        <h3 style="margin-top:16px">Checked against official data</h3>
+        <p class="hint">These compare the whole dataset with independent sources it must agree with, which catches
+          errors in the pipeline itself.</p>
+        <div class="scroll"><table id="checktable"></table></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="block" id="season">
+    <h2>Prediction for the rest of 2026</h2>
+    <p class="intro" id="seasonintro"></p>
+    <div class="card">
+      <h3 id="pacetitle"></h3>
+      <p class="hint">Gap to the fastest car in each race. Diamonds: prediction for the remaining races, with the expected error.</p>
+      <div id="pacechart" style="height:320px"></div>
+    </div>
+    <details class="card more">
+      <summary>Full prediction, model test and data download</summary>
+      <p class="hint">Race pace is a driver’s median comparable lap, as % slower than the fastest driver in that race.
+        The prediction is a simple statistical model: the average of each driver’s last 5 races. It knows nothing about
+        tracks, weather, upgrades, grid position or strategy, so it is the same for every remaining race, and it
+        predicts pace, not finishing order.</p>
+      <div class="buttons" style="margin-bottom:8px">
+        <button class="btn" id="csvpred" type="button">Download prediction (CSV)</button>
+        <button class="btn" id="csvpace" type="button">Download race pace (CSV)</button>
+      </div>
+      <div class="two">
+        <div>
+          <h3>Expected pace, every remaining race</h3>
+          <div class="scroll"><table id="prediction"></table></div>
+        </div>
+        <div>
+          <h3>How good is the model?</h3>
+          <p class="hint" id="backtesthint"></p>
+          <div class="scroll"><table id="horizon"></table></div>
+          <h3 style="margin-top:16px">Why the last 5 races?</h3>
+          <p class="hint">The same test with other form windows. The differences are small, so the simple choice is fine.</p>
+          <div class="scroll"><table id="models"></table></div>
+          <details><summary>Error for each past race</summary><div class="scroll"><table id="backtest"></table></div></details>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="block" id="method">
+    <h2>How it works</h2>
+    <p class="intro">OpenF1 API → load → validate → store in SQLite → analyse → this report. Plain Python (pandas,
+      numpy, SQLite, Plotly), with offline tests that run on every push. Code, data schema and design decisions are on
+      <a href="https://github.com/JohanStefanes/f1-telemetry">GitHub</a>.</p>
   </section>
 </main>
+<footer>
+  Not affiliated with Formula 1, the FIA or any team. Data from <a href="https://openf1.org">OpenF1</a>, an unofficial API.
+  MIT licence · <a href="https://johanstefanes.ch">Johan Stefanes</a> ·
+  <a href="https://github.com/JohanStefanes/f1-telemetry">Source on GitHub</a>
+</footer>
 
 <script type="application/json" id="data">__DATA__</script>
 <script>
 const D = JSON.parse(document.getElementById("data").textContent);
 const [A, B] = D.drivers;
+const S = D.season;
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const color = d => css(d === A ? "--a" : "--b");
 const sel = { [A]: D.comparison[A].lap, [B]: D.comparison[B].lap };
 const lapRow = (d, n) => D.laps.find(l => l.Driver === d && l.LapNumber === n);
 const fmt = (x, p = 3) => x == null ? "–" : x.toFixed(p);
 const signed = (x, p = 3) => x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(p);
+const $ = id => document.getElementById(id);
+const card = (k, v, text) => `<div class="card finding"><div class="k">${k}</div><div class="v">${v}</div><p>${text}</p></div>`;
+const count = (prefix, d) => D.issues.filter(i => i.Check.startsWith(prefix) && (!d || i.Driver === d)).reduce((s, i) => s + i.Count, 0);
+const CHECKS = [
+  ["missing_", "Missing value", "Speed, RPM, gear, throttle or brake is empty"],
+  ["out_of_range_", "Out of range", "Speed 0–380 km/h, RPM 0–15,500, gear 0–8, throttle and brake 0–100 (OpenF1 sends 104 for invalid values)"],
+  ["non_increasing_time", "Time order", "Timestamp not later than the one before"],
+  ["gap_over_1s_feed", "Dropout, feed", "Gap over 1 s that every other car has at the same moment (±0.5 s)"],
+  ["gap_over_1s_car", "Dropout, car", "Gap over 1 s that only this car has"],
+];
+
+const COMPOUND = { SOFT: "#e10600", MEDIUM: "#f5c400", HARD: "#9a9a9a", INTERMEDIATE: "#43b02a", WET: "#0067ad" };
+const date = s => new Date(s + "T12:00:00Z").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 
 function base(extra) {
   return Object.assign({
@@ -105,19 +244,39 @@ function clean(t) { // drop samples with a missing distance or speed
   return { x: i.map(k => t.Distance[k]), v: i.map(k => t.Speed[k]), t: i.map(k => t.TimeInLapS[k]) };
 }
 
-function header() {
+function findings() {
   const c = D.comparison;
-  document.getElementById("title").textContent = D.title;
-  document.getElementById("gaphint").textContent = `Top: time gap at each point on track (below zero = ${B} ahead). Then speed, speed difference, throttle, brake and gear.`;
-  document.getElementById("subtitle").textContent = `${A} vs ${B} · fastest comparable lap: ${A} lap ${c[A].lap}, ${B} lap ${c[B].lap}`;
-  const flagged = D.issues.reduce((s, i) => s + i.Count, 0);
-  const faster = c.delta_s < 0 ? B : A;
-  document.getElementById("kpis").innerHTML = [
-    [D.samples.toLocaleString("en"), "telemetry samples"],
-    [D.laps.length, "laps stored"],
-    [flagged, "flagged samples"],
-    [`${faster} ${Math.abs(c.delta_s).toFixed(3)} s`, "faster on best lap"],
-  ].map(([v, l]) => `<div class="card kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  const faster = c.delta_s < 0 ? B : A, slower = faster === A ? B : A;
+  const s = c.sector_delta_s.map((x, i) => [Math.abs(x), i + 1]).sort((a, b) => b[0] - a[0])[0];
+  const total = count("gap_over_1s"), feed = count("gap_over_1s_feed");
+  const passed = D.checks.filter(c => c.Passed).length;
+  $("title").textContent = `${D.title}: ${A} vs ${B}`;
+  const cards = [
+    card("Fastest lap", `${faster} ${Math.abs(c.delta_s).toFixed(2)} s faster`,
+      `Best laps compared (lap ${c[faster].lap}). Most of it, ${s[0].toFixed(2)} s, came in sector ${s[1]}.`),
+    card("Data quality", total ? `${total} dropouts` : "No errors",
+      (total ? `${feed === total ? "All" : feed} caused by the data feed, not the cars. ` : "") +
+      (D.checks.length ? `${passed} of ${D.checks.length} checks against official data pass.` : "")),
+  ];
+  if (S) {
+    const p = d => S.prediction.find(r => r.Driver === d);
+    const pa = p(A), pb = p(B);
+    if (pa && pb) cards.push(card("Prediction, rest of 2026", `+${((pa.GapPct + pb.GapPct) / 2).toFixed(1)} % off the pace`,
+      `${A} and ${B} expected P${pa.Rank} and P${pb.Rank} on race pace. Tested on past races: ±${S.backtest_mean.ModelErrPct.toFixed(2)} pp.`));
+  }
+  const h = headToHead();
+  if (h) cards.push(card("Team-mates", `${B} ${h.b} – ${h.a} ${A}`,
+    `Who had the better race pace, over the ${h.b + h.a} races both finished with enough clean laps.`));
+  $("findingcards").innerHTML = cards.join("");
+  const asof = S && S.as_of ? `Data up to the ${S.as_of.Race} race on ${date(S.as_of.Date)}` : "";
+  $("asof").textContent = [asof, `report built ${date(D.built)}`].filter(Boolean).join(" · ");
+}
+
+function headToHead() {
+  if (!S) return null;
+  const g = (d, race) => S.pace.find(r => r.Driver === d && r.Race === race);
+  const both = [...new Set(S.pace.map(r => r.Race))].map(r => [g(A, r), g(B, r)]).filter(([a, b]) => a && b);
+  return both.length ? { a: both.filter(([a, b]) => a.GapPct < b.GapPct).length, b: both.filter(([a, b]) => b.GapPct < a.GapPct).length } : null;
 }
 
 function lapChart() {
@@ -126,13 +285,14 @@ function lapChart() {
   for (const d of D.drivers) {
     const laps = D.laps.filter(l => l.Driver === d && l.IsAccurate && l.LapTimeS != null).sort((a, b) => a.LapNumber - b.LapNumber);
     traces.push({ x: laps.map(l => l.LapNumber), y: laps.map(l => l.LapTimeS), name: d, meta: d, mode: "lines+markers",
-      line: { color: color(d), width: 2 }, marker: { size: 5 }, hovertemplate: `${d} lap %{x}: %{y:.3f} s<extra></extra>` });
+      line: { color: color(d), width: 2 }, marker: { size: 5 }, customdata: laps.map(l => l.Compound ? `${l.Compound}, ${l.TyreAge} laps old` : ""),
+      hovertemplate: `${d} lap %{x}: %{y:.3f} s<br>%{customdata}<extra></extra>` });
     const dl = laps.filter(l => drop.has(d + ":" + l.LapNumber));
     traces.push({ x: dl.map(l => l.LapNumber), y: dl.map(l => l.LapTimeS), name: `${d} dropouts`, meta: d, mode: "markers",
       marker: { symbol: "x-thin", size: 9, line: { width: 2, color: color(d) } }, showlegend: false,
       hovertemplate: `${d} lap %{x}: telemetry dropout<extra></extra>` });
   }
-  const el = document.getElementById("lapchart");
+  const el = $("lapchart");
   Plotly.react(el, traces, base({ xaxis: axis({ title: "Lap" }), yaxis: axis({ title: "Lap time (s)" }), hovermode: "closest" }),
     { responsive: true, displayModeBar: false });
   el.removeAllListeners?.("plotly_click");
@@ -140,12 +300,12 @@ function lapChart() {
 }
 
 function pickers() {
-  document.getElementById("pickers").innerHTML = D.drivers.map(d => {
+  $("pickers").innerHTML = D.drivers.map(d => {
     const opts = Object.keys(D.traces[d]).map(Number).sort((a, b) => a - b).map(n => {
       const l = lapRow(d, n) || {};
       return `<option value="${n}" ${n === sel[d] ? "selected" : ""}>Lap ${n} · ${fmt(l.LapTimeS)} s${l.IsAccurate ? "" : " (not comparable)"}</option>`;
     }).join("");
-    return `<label><span class="dot" style="background:${color(d)}"></span>${d}<select data-d="${d}">${opts}</select></label>`;
+    return `<label><span class="dot" style="background:${color(d)}"></span>${d}<select data-d="${d}" aria-label="Lap for ${d}">${opts}</select></label>`;
   }).join("");
   document.querySelectorAll("#pickers select").forEach(s => s.onchange = () => { sel[s.dataset.d] = +s.value; telemetry(); });
 }
@@ -157,14 +317,14 @@ function sectors() {
     return { top: Math.max(...t.Speed.filter(v => v != null)),
              full: 100 * t.Throttle.filter(v => v >= 99).length / t.Throttle.length }; };
   const sa = stats(A), sb = stats(B);
-  const row = (d, r, s) => `<tr><td><span class="dot" style="background:${color(d)}"></span> ${d} · lap ${sel[d]}</td>` +
+  const row = (d, r, s) => `<tr><td class="l"><span class="dot" style="background:${color(d)}"></span> ${d} · lap ${sel[d]}</td>` +
     cols.map(([, k]) => `<td>${fmt(r[k])}</td>`).join("") + `<td>${s.top.toFixed(0)}</td><td>${s.full.toFixed(1)}</td></tr>`;
   const delta = cols.map(([, k]) => { const x = ra[k] != null && rb[k] != null ? rb[k] - ra[k] : null;
     return `<td class="${x < 0 ? "faster" : x > 0 ? "slower" : ""}">${signed(x)}</td>`; }).join("");
-  document.getElementById("sectors").innerHTML =
-    `<tr><th></th>${cols.map(([h]) => `<th>${h} (s)</th>`).join("")}<th>Top km/h</th><th>Full throttle %</th></tr>` +
+  $("sectors").innerHTML =
+    `<tr><th class="l"></th>${cols.map(([h]) => `<th>${h} (s)</th>`).join("")}<th>Top km/h</th><th>Full throttle %</th></tr>` +
     row(A, ra, sa) + row(B, rb, sb) +
-    `<tr><td>Δ ${B} − ${A}</td>${delta}<td>${signed(sb.top - sa.top, 0)}</td><td>${signed(sb.full - sa.full, 1)}</td></tr>`;
+    `<tr><td class="l">Δ ${B} − ${A}</td>${delta}<td>${signed(sb.top - sa.top, 0)}</td><td>${signed(sb.full - sa.full, 1)}</td></tr>`;
 }
 
 function telemetry() {
@@ -189,7 +349,8 @@ function telemetry() {
   const delta = grid.map(x => interp(x, cb.x, cb.v) - interp(x, ca.x, ca.v));
   // Time gap at the same point on track: negative means B got there first.
   const gap = grid.map(x => interp(x, cb.x, cb.t) - interp(x, ca.x, ca.t));
-  const rows = [["y", "Speed", "Speed (km/h)"], ["y3", "Throttle", "Throttle (%)"], ["y4", "Brake", "Brake"], ["y5", "nGear", "Gear"]];
+  const full = $("more").checked;
+  const rows = full ? [["y", "Speed"], ["y3", "Throttle"], ["y4", "Brake"], ["y5", "nGear"]] : [["y", "Speed"]];
   const traces = [];
   for (const d of D.drivers) for (const [ax, key] of rows)
     traces.push({ x: t[d].Distance.map(x => x == null ? null : x * k[d]), y: t[d][key], yaxis: ax, name: d, legendgroup: d, showlegend: ax === "y",
@@ -197,10 +358,15 @@ function telemetry() {
       hovertemplate: `${d} %{y} @ %{x:.0f} m<extra></extra>` });
   traces.push({ x: grid, y: gap, yaxis: "y6", name: `Gap ${B} to ${A}`,
     line: { color: css("--delta"), width: 2 }, hovertemplate: `gap %{y:+.3f} s @ %{x:.0f} m<extra></extra>` });
-  traces.push({ x: grid, y: delta, yaxis: "y2", name: `Δ ${B} − ${A}`, fill: "tozeroy",
+  if (full) traces.push({ x: grid, y: delta, yaxis: "y2", name: `Δ ${B} − ${A}`, fill: "tozeroy",
     line: { color: css("--delta"), width: 1.2 }, hovertemplate: `Δ %{y:.1f} km/h @ %{x:.0f} m<extra></extra>` });
-  Plotly.react("telemetry", traces, base({
-    hovermode: "x", margin: { l: 64, r: 16, t: 8, b: 40 },
+  const simple = {
+    height: 460, xaxis: axis({ title: "Distance in lap (m)", anchor: "y" }),
+    yaxis6: axis({ title: `Gap (s)`, domain: [0.72, 1], zerolinewidth: 1.5 }),
+    yaxis: axis({ title: "Speed (km/h)", domain: [0, 0.64] }),
+  };
+  Plotly.react("telemetry", traces, base(full ? {
+    height: 860, hovermode: "x", margin: { l: 64, r: 16, t: 8, b: 40 },
     xaxis: axis({ title: "Distance in lap (m)", anchor: "y5" }),
     yaxis6: axis({ title: `Gap (s)`, domain: [0.84, 1], zerolinewidth: 1.5 }),
     yaxis: axis({ title: "Speed (km/h)", domain: [0.46, 0.81] }),
@@ -208,24 +374,136 @@ function telemetry() {
     yaxis3: axis({ title: "Throttle %", domain: [0.235, 0.32], range: [-5, 105] }),
     yaxis4: axis({ title: "Brake", domain: [0.12, 0.205], range: [-5, 105] }),
     yaxis5: axis({ title: "Gear", domain: [0, 0.09], range: [0, 9] }),
-  }), { responsive: true, displayModeBar: false });
+  } : { ...simple, hovermode: "x", margin: { l: 64, r: 16, t: 8, b: 40 } }), { responsive: true, displayModeBar: false });
+}
+
+function tyres() {
+  const stints = [];
+  for (const d of D.drivers) {
+    const laps = D.laps.filter(l => l.Driver === d && l.Compound);
+    for (const s of [...new Set(laps.map(l => l.Stint))]) {
+      const ls = laps.filter(l => l.Stint === s);
+      stints.push({ d, s, c: ls[0].Compound, first: Math.min(...ls.map(l => l.LapNumber)), last: Math.max(...ls.map(l => l.LapNumber)) });
+    }
+  }
+  if (!stints.length) { $("tyres").hidden = true; return; }
+  $("tyrehint").textContent = "Each bar is one set of tyres. Wear is the lap time lost per lap on the same set, from a straight " +
+    "line through the clean laps. A negative value means the car got faster: burning fuel made it lighter by more than the tyres lost.";
+  Plotly.react("stintchart", stints.map(s => ({
+    type: "bar", orientation: "h", y: [s.d], x: [s.last - s.first + 1], base: [s.first - 0.5], name: s.c, showlegend: false,
+    marker: { color: COMPOUND[s.c] || css("--muted"), line: { color: css("--card"), width: 2 } },
+    text: [s.c[0]], textposition: "inside", insidetextanchor: "middle",
+    hovertemplate: `${s.d} stint ${s.s}: ${s.c}, laps ${s.first}–${s.last}<extra></extra>`,
+  })), base({ barmode: "overlay", margin: { l: 48, r: 16, t: 4, b: 36 }, xaxis: axis({ title: "Lap" }),
+    yaxis: axis({ autorange: "reversed" }) }), { responsive: true, displayModeBar: false });
+  $("stints").innerHTML = `<tr><th class="l">Driver</th><th class="l">Tyre</th><th>Clean laps</th><th>Count</th>` +
+    `<th>Median lap (s)</th><th>Wear (s per lap)</th></tr>` +
+    [...D.stints].sort((x, y) => D.drivers.indexOf(x.Driver) - D.drivers.indexOf(y.Driver) || x.Stint - y.Stint).map(r =>
+      `<tr><td class="l"><span class="dot" style="background:${color(r.Driver)}"></span> ${r.Driver}</td>` +
+      `<td class="l"><span class="dot" style="background:${COMPOUND[r.Compound] || "gray"}"></span> ${r.Compound}</td>` +
+      `<td>${r.FirstLap}–${r.LastLap}</td><td>${r.Laps}</td><td>${r.MedianS.toFixed(3)}</td><td>${signed(r.DegS)}</td></tr>`).join("");
+}
+
+function compareText() {
+  const c = D.comparison;
+  $("comparetitle").textContent = `Lap comparison: ${A} vs ${B}`;
+  $("compareintro").textContent = `Each driver’s fastest lap, side by side (${A} lap ${c[A].lap}, ${B} lap ${c[B].lap}). Pick other laps from the lists.`;
+  $("gaphint").textContent = `Top: time gap along the lap (below zero = ${B} ahead). Bottom: speed.`;
 }
 
 function quality() {
-  const totals = {};
-  for (const i of D.issues) { totals[i.Check] ??= { [A]: 0, [B]: 0, laps: new Set() };
-    totals[i.Check][i.Driver] += i.Count; totals[i.Check].laps.add(i.LapNumber); }
-  const names = Object.keys(totals);
-  document.getElementById("qualityhint").textContent = names.length
-    ? "Samples flagged by each validation check. Checks with no hits are not listed. A gap is “feed” when every car has it at the same moment, “car” when only this car does."
-    : "No validation check flagged any sample.";
-  document.getElementById("quality").innerHTML = names.length ? `<tr><th>Check</th><th>${A}</th><th>${B}</th><th>Laps affected</th></tr>` +
-    names.map(n => `<tr><td>${n}</td><td>${totals[n][A]}</td><td>${totals[n][B]}</td><td>${totals[n].laps.size}</td></tr>`).join("") : "";
+  const feed = count("gap_over_1s_feed"), car = count("gap_over_1s_car"), passed = D.checks.filter(c => c.Passed).length;
+  $("qualitysummary").innerHTML = `Every one of the ${D.samples.toLocaleString("en")} telemetry samples is checked for missing values, ` +
+    `impossible values, wrong time order and dropouts (gaps over 1 s). ` + (feed + car
+      ? `<strong>${feed + car} dropouts</strong> were found${car ? "" : `, all in both cars at the same moment, so the data feed caused them, not the cars`}. `
+      : "<strong>Nothing</strong> was flagged. ") +
+    (D.checks.length ? `The whole dataset was also compared with official results and timing: <strong>${passed} of ${D.checks.length} checks pass</strong>.` : "");
+  $("checks").innerHTML = `<tr><th class="l">Check</th><th class="l">Rule</th><th>${A}</th><th>${B}</th><th>Result</th></tr>` +
+    CHECKS.map(([p, name, rule]) => {
+      const a = count(p, A), b = count(p, B);
+      return `<tr><td class="l"><strong>${name}</strong></td><td class="l">${rule}</td><td>${a}</td><td>${b}</td>` +
+        `<td>${a + b ? `<span class="pill">${a + b} flagged</span>` : `<span class="pill ok">OK</span>`}</td></tr>`;
+    }).join("");
+  const ex = D.excluded;
+  $("excluded").textContent = ex.length ? "Before these checks, samples recorded outside the race laps (on the grid, in the garage, " +
+    "after the flag) were set aside: " + ex.map(e => `${e.Samples.toLocaleString("en")} for ${e.Driver}, ${e.Invalid.toLocaleString("en")} of them invalid`).join("; ") +
+    ". Invalid there means mostly OpenF1’s 104 error value, which never appears during the race laps." : "";
+  if (!D.checks.length) $("crosschecks").hidden = true;
+  $("checktable").innerHTML = `<tr><th class="l">Check</th><th class="l">Compared with</th><th class="l">Result</th><th></th></tr>` +
+    D.checks.map(c => `<tr><td class="l"><strong>${c.Check}</strong></td><td class="l">${c.Source}</td><td class="l">${c.Result}</td>` +
+      `<td><span class="pill ${c.Passed ? "ok" : "bad"}">${c.Passed ? "Pass" : "Fail"}</span></td></tr>`).join("");
+  $("verdict").textContent = feed + car === 0 ? "No dropouts: the data is complete."
+    : car === 0 ? `All ${feed} dropouts happened in both cars at the same moment, so the gaps come from the data feed, not from either car’s sensors.`
+    : `${feed} dropouts came from the data feed (both cars at once); ${car} happened in one car only and are worth a closer look.`;
 }
 
-function render() { header(); lapChart(); pickers(); telemetry(); quality(); }
-render();
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { lapChart(); pickers(); telemetry(); });
+function season() {
+  if (!S) { $("season").hidden = true; return; }
+  const p = d => S.prediction.find(r => r.Driver === d);
+  const picks = D.drivers.map(d => p(d)).filter(Boolean);
+  $("seasonintro").innerHTML = (picks.length ? picks.map(x => `<strong>${x.Driver} +${x.GapPct.toFixed(2)} %</strong> (P${x.Rank})`).join(" and ") +
+    ` behind the fastest car on race pace, in each of the ${S.remaining.length} remaining races (${S.remaining.map(r => r.Race).join(", ")}). ` : "") +
+    `A simple model: the average of the last 5 races. Tested on ${S.backtest.length} past races, it was off by ` +
+    `±${S.backtest_mean.ModelErrPct.toFixed(2)} percentage points on average.`;
+  $("pacetitle").textContent = `Race pace of ${A} and ${B}, ${S.races} races so far`;
+  const past = [...new Map(S.pace.map(r => [r.Date, r.Race])).values()];
+  const future = S.remaining.map(r => r.Race);
+  const traces = D.drivers.map(d => {
+    const rows = S.pace.filter(r => r.Driver === d);
+    return { x: rows.map(r => r.Race), y: rows.map(r => r.GapPct), name: d, mode: "lines+markers",
+      line: { color: color(d), width: 2 }, hovertemplate: `${d} %{x}: +%{y:.2f} %<extra></extra>` };
+  });
+  for (const d of D.drivers) {
+    const x = p(d);
+    if (x && future.length) traces.push({ x: future, y: future.map(() => x.GapPct), name: `${d} predicted`, mode: "markers",
+      // A filled and small, B open and larger, so both stay visible when the predictions are close
+      showlegend: false, marker: { color: color(d), size: d === A ? 8 : 13, symbol: d === A ? "diamond" : "diamond-open", line: { width: 2, color: color(d) } },
+      error_y: { type: "data", array: S.remaining.map(r => r.ErrPct ?? 0), color: color(d), thickness: 1.2, width: 4 },
+      hovertemplate: `${d} %{x} (predicted): +%{y:.2f} %<extra></extra>` });
+  }
+  Plotly.react("pacechart", traces, base({ hovermode: "closest",
+    xaxis: axis({ categoryorder: "array", categoryarray: [...past, ...future], tickangle: -40 }),
+    yaxis: axis({ title: "Gap to fastest (%)", rangemode: "tozero" }), margin: { l: 56, r: 16, t: 8, b: 90 },
+    shapes: future.length ? [{ type: "rect", xref: "x", yref: "paper", x0: past.length - 0.5, x1: past.length + future.length - 0.5,
+      y0: 0, y1: 1, fillcolor: css("--soft"), line: { width: 0 }, layer: "below" }] : [] }),
+    { responsive: true, displayModeBar: false });
+
+  $("prediction").innerHTML =
+    `<tr><th>Pace</th><th class="l">Driver</th><th class="l">Team</th><th>Expected gap</th></tr>` +
+    S.prediction.map(r => `<tr class="${D.drivers.includes(r.Driver) ? "pick" : ""}"><td>P${r.Rank}</td><td class="l">${r.Driver}</td>` +
+      `<td class="l">${r.Team ?? ""}</td><td>+${r.GapPct.toFixed(2)} %</td></tr>`).join("");
+  const m = S.backtest_mean;
+  $("backtesthint").textContent =
+    `To test the model, each past race was predicted using only the races before it, then compared with what happened. ` +
+    `For the next race the expected gap was off by ${m.ModelErrPct.toFixed(2)} percentage points on average; simply repeating ` +
+    `each driver’s last race was off by ${m.NaiveErrPct.toFixed(2)}. So the model helps, but only a little.`;
+  $("horizon").innerHTML = `<tr><th class="l">Race</th><th>Races ahead</th><th>Tested on</th><th>Gap error</th><th>Order error</th></tr>` +
+    S.remaining.map(r => `<tr><td class="l">${r.Race}</td><td>${r.Ahead}</td><td>${r.Tested}</td>` +
+      `<td>±${r.ErrPct == null ? "–" : r.ErrPct.toFixed(2)} pp</td><td>±${r.RankErr == null ? "–" : r.RankErr.toFixed(1)} places</td></tr>`).join("");
+  $("models").innerHTML = `<tr><th class="l">Prediction from</th><th>Gap error, next race</th></tr>` +
+    S.models.map(r => `<tr class="${r.Recent === 5 ? "pick" : ""}"><td class="l">${r.Recent >= 99 ? "the whole season" : `last ${r.Recent} races`}</td>` +
+      `<td>±${r.ErrPct.toFixed(2)} pp</td></tr>`).join("");
+  const csv = (name, rows) => () => {
+    const cols = Object.keys(rows[0]);
+    const text = [cols.join(","), ...rows.map(r => cols.map(c => JSON.stringify(r[c] ?? "")).join(","))].join("\n");
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([text], { type: "text/csv" })), download: name });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  $("csvpred").onclick = csv("prediction.csv", S.prediction);
+  $("csvpace").onclick = csv("race_pace.csv", S.pace);
+  $("backtest").innerHTML =
+    `<tr><th class="l">Race</th><th>Drivers</th><th>Model (pp)</th><th>Last race (pp)</th><th>Order (places)</th></tr>` +
+    S.backtest.map(r => `<tr><td class="l">${r.Race}</td><td>${r.Drivers}</td><td>${r.ModelErrPct.toFixed(2)}</td>` +
+      `<td>${r.NaiveErrPct.toFixed(2)}</td><td>${r.RankErr.toFixed(1)}</td></tr>`).join("");
+}
+
+function charts() { lapChart(); pickers(); telemetry(); tyres(); season(); }
+findings(); compareText(); quality(); charts();
+$("more").onchange = telemetry;
+// Charts inside closed <details> are drawn at the wrong width; redraw them when opened.
+document.querySelectorAll("details").forEach(d => d.addEventListener("toggle", () =>
+  d.open && d.querySelectorAll(".js-plotly-plot").forEach(el => Plotly.Plots.resize(el))));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", charts);
 </script>
 </body>
 </html>

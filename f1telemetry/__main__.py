@@ -14,15 +14,16 @@ def main():
     p.add_argument("--db", default="telemetry.db")
     args = p.parse_args()
 
-    samples, laps = load(args.year, args.location, args.session, list(args.drivers))
+    samples, laps, excluded = load(args.year, args.location, args.session, list(args.drivers))
     issues = validate(samples)
-    store(args.db, samples, laps, issues)
+    store(args.db, samples=samples, laps=laps, issues=issues, excluded=excluded)
 
     flagged = int(issues["Count"].sum()) if len(issues) else 0
     report = {
         "samples": len(samples),
         "laps": len(laps),
         "flagged_samples": flagged,
+        "excluded_outside_race": excluded.set_index("Driver").to_dict("index"),
         "issues_by_check": issues.groupby("Check")["Count"].sum().to_dict() if len(issues) else {},
         "comparison": compare(samples, laps, *args.drivers),
     }

@@ -16,16 +16,21 @@ CHANNELS = ["Speed", "RPM", "nGear", "Throttle", "Brake", "DRS"]
 # (OpenF1 reports 104 for throttle/brake when the value is invalid).
 LIMITS = {"Speed": (0, 380), "RPM": (0, 15500), "nGear": (0, 8), "Throttle": (0, 100), "Brake": (0, 100)}
 CACHE = Path(".cache")  # raw API responses; delete it to download again
-RETRIES = 4
+RETRIES = 6  # waits 1, 2, 4, 8, 16 s: OpenF1 allows only a few requests per second
 MAX_GAP_S = 1.0  # car data arrives at ~4 Hz; a longer gap is a dropout
 MATCH_S = 0.5  # gaps in different cars this close together are the same feed dropout
+SLOW_LAP = 1.07  # slower than 107 % of the driver's median lap: safety car, VSC or a problem
+MIN_STINT = 5  # comparable laps a stint needs before a degradation slope means anything
 
 
-def get(endpoint, **params):
-    """Fetch one OpenF1 endpoint. The raw JSON is kept in CACHE, so reruns do not download again."""
+def get(endpoint, fresh=False, **params):
+    """Fetch one OpenF1 endpoint. The raw JSON is kept in CACHE, so reruns do not download again.
+
+    fresh=True downloads again, for answers that change over time such as the list of races so far.
+    """
     query = urllib.parse.urlencode(sorted(params.items()))
     path = CACHE / f"{endpoint}_{query}.json"
-    if not path.exists():
+    if fresh or not path.exists():
         raw = fetch(f"{API}/{endpoint}?{query}")
         CACHE.mkdir(exist_ok=True)
         path.with_suffix(".tmp").write_bytes(raw)
@@ -43,7 +48,8 @@ def fetch(url):
             client_error = isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429
             if client_error or attempt == RETRIES - 1:
                 raise
-            time.sleep(2 ** attempt)
+            wait = getattr(e, "headers", None) and e.headers.get("Retry-After")
+            time.sleep(float(wait) if wait and wait.isdigit() else 2 ** attempt)
 
 
 def find_session(year, location, session="Race"):
@@ -54,43 +60,96 @@ def find_session(year, location, session="Race"):
 
 
 def load(year, location, session, drivers):
-    """Return (samples, laps) for the given driver acronyms, e.g. ["HUL", "BOR"]."""
+    """Return (samples, laps, excluded) for the given driver acronyms, e.g. ["HUL", "BOR"].
+
+    excluded counts, per driver, the samples recorded outside the race laps (grid, garage, after the flag)
+    and how many of those carried invalid values, so the report can say what was left out.
+    """
     s = find_session(year, location, session)
-    roster = get("drivers", session_key=s["session_key"]).set_index("name_acronym")["driver_number"]
+    key = s["session_key"]
+    roster = get("drivers", session_key=key).set_index("driver_number")["name_acronym"]
+    all_laps = lap_table(get("laps", session_key=key), get("pit", session_key=key), roster,
+                         get("stints", session_key=key))
     start = pd.Timestamp(s["date_start"])
-    samples, laps = [], []
+    samples, excluded = [], []
     for acronym in drivers:
-        number = int(roster[acronym])
-        car = get("car_data", session_key=s["session_key"], driver_number=number)
-        lap = get("laps", session_key=s["session_key"], driver_number=number)
+        number = int(roster[roster == acronym].index[0])
+        car = get("car_data", session_key=key, driver_number=number)
         car["date"] = pd.to_datetime(car["date"], format="ISO8601")
-        lap["date_start"] = pd.to_datetime(lap["date_start"], format="ISO8601")
-        lap = lap.dropna(subset=["date_start"]).sort_values("date_start")
-        lap["date_end"] = lap["date_start"] + pd.to_timedelta(lap["lap_duration"], unit="s")
+        lap = all_laps[all_laps["Driver"] == acronym]
         # Assign each sample to the lap it falls in; samples outside any lap (grid, garage) are dropped.
-        car = pd.merge_asof(car.sort_values("date"), lap[["date_start", "date_end", "lap_number"]],
-                            left_on="date", right_on="date_start")
-        car = car[car["date"] < car["date_end"]]
+        car = pd.merge_asof(car.sort_values("date"), lap[["DateStart", "DateEnd", "LapNumber"]],
+                            left_on="date", right_on="DateStart")
         car = car.rename(columns={"speed": "Speed", "rpm": "RPM", "n_gear": "nGear",
-                                  "throttle": "Throttle", "brake": "Brake", "drs": "DRS",
-                                  "lap_number": "LapNumber"})
+                                  "throttle": "Throttle", "brake": "Brake", "drs": "DRS"})
+        inside = car["date"] < car["DateEnd"]
+        invalid = pd.concat([~car[c].between(*LIMITS[c]) for c in LIMITS], axis=1).any(axis=1)
+        excluded.append({"Driver": acronym, "Samples": int((~inside).sum()), "Invalid": int((~inside & invalid).sum())})
+        car = car[inside]
         car["Driver"] = acronym
         car["LapNumber"] = car["LapNumber"].astype(int)
         car["SessionTimeS"] = (car["date"] - start).dt.total_seconds()
-        car["TimeInLapS"] = (car["date"] - car["date_start"]).dt.total_seconds()
+        car["TimeInLapS"] = (car["date"] - car["DateStart"]).dt.total_seconds()
         car["Distance"] = add_distance(car)
         samples.append(car[["Driver", "LapNumber", "SessionTimeS", "TimeInLapS", "Distance", *CHANNELS]])
-        laps.append(pd.DataFrame({
-            "Driver": acronym,
-            "LapNumber": lap["lap_number"].astype(int),
-            "LapTimeS": lap["lap_duration"],
-            "S1": lap["duration_sector_1"],
-            "S2": lap["duration_sector_2"],
-            "S3": lap["duration_sector_3"],
-            # Lap 1 starts from the grid and out-laps leave the pits: not comparable.
-            "IsAccurate": (lap["lap_number"] > 1) & ~lap["is_pit_out_lap"].fillna(False).astype(bool),
-        }))
-    return pd.concat(samples, ignore_index=True), pd.concat(laps, ignore_index=True)
+    laps = all_laps[all_laps["Driver"].isin(drivers)].drop(columns=["DateStart", "DateEnd"])
+    return pd.concat(samples, ignore_index=True), laps.reset_index(drop=True), pd.DataFrame(excluded)
+
+
+def lap_table(lap, pit, roster, stints=None):
+    """One row per lap from OpenF1 laps, pit stops and tyre stints; roster maps driver number to acronym."""
+    lap = lap.dropna(subset=["date_start"])
+    start = pd.to_datetime(lap["date_start"], format="ISO8601")
+    # OpenF1 gives the lap a car entered the pits on; the lap after it is flagged as the out-lap.
+    pit_in = set(zip(pit["driver_number"], pit["lap_number"].astype(int))) if len(pit) else set()
+    out = pd.DataFrame({
+        "Driver": lap["driver_number"].map(roster),
+        "LapNumber": lap["lap_number"].astype(int),
+        "LapTimeS": lap["lap_duration"],
+        "S1": lap["duration_sector_1"],
+        "S2": lap["duration_sector_2"],
+        "S3": lap["duration_sector_3"],
+        "PitIn": [(d, n) in pit_in for d, n in zip(lap["driver_number"], lap["lap_number"])],
+        "PitOut": lap["is_pit_out_lap"].fillna(False).astype(bool),
+        "TrapKmh": lap.get("st_speed"),
+        "Stint": None, "Compound": None, "TyreAge": None,
+        "DateStart": start,
+        "DateEnd": start + pd.to_timedelta(lap["lap_duration"], unit="s"),
+    })
+    if stints is not None and len(stints):
+        m = (lap[["driver_number", "lap_number"]].reset_index().merge(stints, on="driver_number")
+             .query("lap_start <= lap_number and (lap_number <= lap_end or lap_end != lap_end)")  # NaN end: still running
+             .drop_duplicates("index").set_index("index"))
+        out["Stint"], out["Compound"] = m["stint_number"], m["compound"]
+        out["TyreAge"] = m["tyre_age_at_start"] + m["lap_number"] - m["lap_start"]
+    out = out.dropna(subset=["Driver"]).sort_values(["Driver", "DateStart"])
+    out["IsAccurate"] = comparable(out)
+    return out.reset_index(drop=True)
+
+
+def degradation(laps):
+    """Seconds lost per lap of tyre age in each stint: the slope of a straight line through its comparable laps.
+
+    The car also gets lighter as fuel burns, which makes it faster, so the real tyre wear is somewhat larger.
+    """
+    rows = []
+    ok = laps[laps["IsAccurate"].astype(bool) & laps["Compound"].notna()]
+    for (driver, stint), g in ok.groupby(["Driver", "Stint"]):
+        if len(g) < MIN_STINT:
+            continue
+        rows.append({"Driver": driver, "Stint": int(stint), "Compound": g["Compound"].iloc[0],
+                     "FirstLap": int(g["LapNumber"].min()), "LastLap": int(g["LapNumber"].max()), "Laps": len(g),
+                     "DegS": round(float(np.polyfit(g["TyreAge"].astype(float), g["LapTimeS"], 1)[0]), 3),
+                     "MedianS": round(float(g["LapTimeS"].median()), 3)})
+    return pd.DataFrame(rows, columns=["Driver", "Stint", "Compound", "FirstLap", "LastLap", "Laps", "DegS", "MedianS"])
+
+
+def comparable(laps):
+    """Laps that show race pace: not lap 1 (grid start), not into or out of the pits,
+    and not slower than SLOW_LAP times the driver's median (safety car, VSC, a problem)."""
+    median = laps.groupby("Driver")["LapTimeS"].transform("median")
+    return ((laps["LapNumber"] > 1) & ~laps["PitIn"] & ~laps["PitOut"]
+            & (laps["LapTimeS"] <= SLOW_LAP * median))
 
 
 def add_distance(car):
@@ -120,7 +179,7 @@ def validate(samples):
     rows = []
     for name, mask in checks.items():
         hit = samples.loc[mask, ["Driver", "LapNumber"]].value_counts()
-        rows += [(d, int(l), name, int(n)) for (d, l), n in hit.items()]
+        rows += [(d, int(lap), name, int(n)) for (d, lap), n in hit.items()]
     return pd.DataFrame(rows, columns=["Driver", "LapNumber", "Check", "Count"])
 
 
@@ -138,11 +197,11 @@ def feed_gaps(samples, gap):
     return shared
 
 
-def store(db_path, samples, laps, issues):
+def store(db_path, **tables):
+    """Write each DataFrame to the SQLite table of the same name, replacing what was there."""
     with sqlite3.connect(db_path) as con:
-        samples.to_sql("samples", con, if_exists="replace", index=False)
-        laps.to_sql("laps", con, if_exists="replace", index=False)
-        issues.to_sql("issues", con, if_exists="replace", index=False)
+        for name, df in tables.items():
+            df.to_sql(name, con, if_exists="replace", index=False)
 
 
 def compare(samples, laps, a, b):
