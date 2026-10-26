@@ -6,7 +6,8 @@ A small Python pipeline for Formula 1 data. It downloads car telemetry for two d
 lap times for every 2026 race, checks the data for errors, stores it in SQLite, compares
 the two drivers' fastest laps and makes a simple, backtested pace prediction for the rest of the season.
 
-**[Open the live report](https://johanstefanes.github.io/f1-telemetry/report.html)**
+**[Open the live report](https://johanstefanes.github.io/f1-telemetry/report.html)**: it updates itself after
+every race (see [Automatic updates](#automatic-updates)).
 
 ![Report: lap times and telemetry for Hülkenberg vs Bortoleto, 2026 US GP](docs/report.png)
 
@@ -28,19 +29,32 @@ OpenF1 API  →  load  →  validate  →  SQLite  →  compare / predict  →  
 You need [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv run python -m f1telemetry --year 2026 --location Austin --drivers HUL BOR
+uv run python -m f1telemetry --year 2026 --drivers HUL BOR
 uv run python -m f1telemetry.season --year 2026
-uv run python -m f1telemetry.report --title "2026 United States GP"
+uv run python -m f1telemetry.report
 uv run pytest
 ```
 
-1. The first command downloads one race's telemetry.
+1. The first command downloads the telemetry of the latest race that OpenF1 has published
+   (add `--location Austin` for a specific one).
 2. The second downloads the laps of every completed 2026 race.
 3. The third writes `report.html`, which you open in a browser.
 
 Raw API responses are kept in `.cache/`, so reruns take about a second, and failed downloads and rate limits are retried.
+Empty answers are not cached, because they usually mean OpenF1 has not published that data yet.
 
-## Result: 2026 US GP, Hülkenberg vs Bortoleto (Audi)
+## Automatic updates
+
+A scheduled GitHub Action ([`update.yml`](.github/workflows/update.yml)) runs the three commands every
+Monday, Tuesday and Wednesday morning, after the Sunday race. It picks the latest race that already has
+data, reloads the season and rebuilds the report. Only if the report changed does it commit and publish
+it, so weeks without a race leave the repository untouched. It can also be started by hand from the
+Actions tab.
+
+## Snapshot: 2026 US GP, Hülkenberg vs Bortoleto (Audi)
+
+The live report always shows the latest race. The numbers in this README are from the United States GP
+on 25 October 2026, the latest race when it was written.
 
 Bortoleto's best lap was **1.93 s faster** (both on lap 53), most of it in sector 2.
 
@@ -149,7 +163,7 @@ f1telemetry/
   report.py      writes report.html from telemetry.db
   report.html    page template for the report
   __main__.py    command line for one race
-tests/           18 offline tests
+tests/           20 offline tests
 docs/            screenshot for this README
 report.html      the generated report, published on GitHub Pages
 ```
@@ -174,15 +188,15 @@ report.html      the generated report, published on GitHub Pages
 - Track map from OpenF1's car position data, coloured by the faster driver.
 - Corner-by-corner analysis: braking points and minimum speeds.
 - Weather per race, to explain outliers such as wet races.
-- Update the report automatically after each race with a scheduled GitHub Action.
 - Use track type (street, high-speed, high-downforce) in the prediction, once there is enough data to learn it.
 - Alert when a feed dropout happens during a live session.
 
 ## Built with
 
-Python 3.12, pandas, numpy, SQLite, Plotly. 18 pytest tests run without internet and cover loading,
+Python 3.12, pandas, numpy, SQLite, Plotly. 20 pytest tests run without internet and cover loading,
 retries and caching, validation, dropout classification, comparable laps, distance, tyre wear, lap
-comparison, race pace, prediction, backtest, cross-checks and the report. Every push runs ruff and the tests.
+comparison, race pace, prediction, backtest, cross-checks, picking the latest race and the report.
+Every push runs ruff and the tests.
 
 ---
 

@@ -1,0 +1,37 @@
+name: update report
+
+# Races end on Sunday; OpenF1 publishes the data within hours. Checking Monday to Wednesday
+# morning catches late data too. Run it by hand from the Actions tab at any time.
+on:
+  schedule:
+    - cron: "0 6 * * 1,2,3"
+  workflow_dispatch:
+
+permissions:
+  contents: write  # commit the new report
+  pages: write     # ask GitHub Pages to publish it
+
+concurrency: update-report
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Load the latest race and the season
+        run: |
+          uv run python -m f1telemetry --year 2026 --drivers HUL BOR
+          uv run python -m f1telemetry.season --year 2026
+          uv run python -m f1telemetry.report
+      - name: Publish if there is new data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet report.html; then echo "No new race data."; exit 0; fi
+          git config user.name "JohanStefanes"
+          git config user.email "171947042+JohanStefanes@users.noreply.github.com"
+          git add report.html
+          git commit -m "Update report with the latest race data"
+          git push
+          gh api -X POST "repos/${{ github.repository }}/pages/builds" > /dev/null

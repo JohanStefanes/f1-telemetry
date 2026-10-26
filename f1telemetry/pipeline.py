@@ -32,6 +32,8 @@ def get(endpoint, fresh=False, **params):
     path = CACHE / f"{endpoint}_{query}.json"
     if fresh or not path.exists():
         raw = fetch(f"{API}/{endpoint}?{query}")
+        if not json.loads(raw):
+            return pd.DataFrame()  # empty usually means "not published yet": ask again next time
         CACHE.mkdir(exist_ok=True)
         path.with_suffix(".tmp").write_bytes(raw)
         path.with_suffix(".tmp").replace(path)  # never leave a half-written file in the cache
@@ -52,20 +54,37 @@ def fetch(url):
             time.sleep(float(wait) if wait and wait.isdigit() else 2 ** attempt)
 
 
-def find_session(year, location, session="Race"):
-    found = get("sessions", year=year, location=location, session_name=session)
-    if found.empty:
-        raise SystemExit(f"No {session} session for {location} {year} on OpenF1")
-    return found.iloc[0]
+def find_session(year, location=None, session="Race"):
+    """The session at `location`, or with no location the latest finished one that already has lap data."""
+    if location:
+        found = get("sessions", year=year, location=location, session_name=session)
+        if found.empty:
+            raise SystemExit(f"No {session} session for {location} {year} on OpenF1")
+        return found.iloc[0]
+    found = get("sessions", fresh=True, year=year, session_name=session)
+    if not found.empty:
+        finished = ~found["is_cancelled"].fillna(False).astype(bool) & (
+            pd.to_datetime(found["date_end"], format="ISO8601") < pd.Timestamp.now(tz="UTC"))
+        for _, s in found[finished].sort_values("date_start", ascending=False).iterrows():
+            if not get("laps", session_key=s["session_key"], lap_number=2).empty:  # one small request per race
+                return s
+    raise SystemExit(f"No finished {session} session with lap data for {year} on OpenF1")
 
 
-def load(year, location, session, drivers):
+def race_title(s):
+    """'2026 United States GP' for a session, from the meeting it belongs to."""
+    meeting = get("meetings", meeting_key=s["meeting_key"])
+    name = meeting["meeting_name"].iloc[0] if not meeting.empty else s["location"]
+    return f"{s['year']} {name.replace(' Grand Prix', ' GP')}"
+
+
+def load(year, location, session, drivers, s=None):
     """Return (samples, laps, excluded) for the given driver acronyms, e.g. ["HUL", "BOR"].
 
     excluded counts, per driver, the samples recorded outside the race laps (grid, garage, after the flag)
     and how many of those carried invalid values, so the report can say what was left out.
     """
-    s = find_session(year, location, session)
+    s = find_session(year, location, session) if s is None else s
     key = s["session_key"]
     roster = get("drivers", session_key=key).set_index("driver_number")["name_acronym"]
     all_laps = lap_table(get("laps", session_key=key), get("pit", session_key=key), roster,
@@ -98,6 +117,9 @@ def load(year, location, session, drivers):
 
 def lap_table(lap, pit, roster, stints=None):
     """One row per lap from OpenF1 laps, pit stops and tyre stints; roster maps driver number to acronym."""
+    if lap.empty:
+        lap = pd.DataFrame(columns=["driver_number", "lap_number", "lap_duration", "date_start", "is_pit_out_lap",
+                                    "duration_sector_1", "duration_sector_2", "duration_sector_3"])
     lap = lap.dropna(subset=["date_start"])
     start = pd.to_datetime(lap["date_start"], format="ISO8601")
     # OpenF1 gives the lap a car entered the pits on; the lap after it is flagged as the out-lap.

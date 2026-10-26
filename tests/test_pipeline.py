@@ -176,3 +176,31 @@ def test_degradation_is_the_lap_time_slope_per_stint():
     deg = degradation(laps)
     assert deg[["Stint", "Compound", "Laps"]].values.tolist() == [[1, "SOFT", 8]]  # 4 hard laps are too few
     assert deg.loc[0, "DegS"] == pytest.approx(0.1)
+
+
+def test_latest_race_skips_races_without_data_and_future_races(monkeypatch):
+    sessions = pd.DataFrame([
+        {"session_key": 1, "location": "Austin", "date_start": "2026-10-25T20:00:00Z", "date_end": "2026-10-25T22:00:00Z", "is_cancelled": False},
+        {"session_key": 2, "location": "Mexico City", "date_start": "2026-11-01T20:00:00Z", "date_end": "2026-11-01T22:00:00Z", "is_cancelled": False},
+        {"session_key": 3, "location": "São Paulo", "date_start": "2099-11-08T17:00:00Z", "date_end": "2099-11-08T19:00:00Z", "is_cancelled": False},
+    ])
+    published = {1}  # Mexico City has finished, but OpenF1 has no laps for it yet
+
+    def get(endpoint, fresh=False, **params):
+        if endpoint == "sessions":
+            return sessions
+        return pd.DataFrame([{"lap_number": 2}]) if params["session_key"] in published else pd.DataFrame()
+
+    monkeypatch.setattr(pipeline, "get", get)
+    monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: pd.Timestamp("2026-11-02T08:00:00Z")))
+    assert pipeline.find_session(2026)["location"] == "Austin"
+    published.add(2)
+    assert pipeline.find_session(2026)["location"] == "Mexico City"
+
+
+def test_empty_answers_are_not_cached(monkeypatch, tmp_path):
+    answers = [b"[]", b'[{"lap_number": 1}]']
+    monkeypatch.setattr(pipeline, "CACHE", tmp_path)
+    monkeypatch.setattr(pipeline, "fetch", lambda url: answers.pop(0))
+    assert pipeline.get("laps", session_key=2).empty  # not published yet
+    assert pipeline.get("laps", session_key=2).to_dict("records") == [{"lap_number": 1}]  # asked again

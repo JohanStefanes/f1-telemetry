@@ -36,10 +36,14 @@ def load_season(year):
     table, _ = races(year)
     laps, results = [], []
     for r in table[table["Status"] == "done"].itertuples():
+        raw = get("laps", session_key=r.SessionKey)
+        if raw.empty:  # finished, but OpenF1 has not published the laps yet: still to come for us
+            table.loc[table["SessionKey"] == r.SessionKey, "Status"] = "upcoming"
+            continue
         drivers = get("drivers", session_key=r.SessionKey)
         roster = drivers.set_index("driver_number")["name_acronym"]
         team = drivers.set_index("name_acronym")["team_name"]
-        t = lap_table(get("laps", session_key=r.SessionKey), get("pit", session_key=r.SessionKey), roster,
+        t = lap_table(raw, get("pit", session_key=r.SessionKey), roster,
                       get("stints", session_key=r.SessionKey))
         laps.append(t.drop(columns=["DateStart", "DateEnd"])
                      .assign(SessionKey=r.SessionKey, Race=r.Race, Date=r.Date, Team=t["Driver"].map(team)))

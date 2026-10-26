@@ -409,7 +409,7 @@ function findings() {
     `linear-gradient(90deg, ${color(B)} 50%, ${color(A)} 50%)`));
   $("findingcards").innerHTML = cards.join("");
   const asof = S && S.as_of ? `Data up to the ${S.as_of.Race} race on ${date(S.as_of.Date)}` : "";
-  $("asof").textContent = [asof, `report built ${date(D.built)}`].filter(Boolean).join(" · ");
+  $("asof").textContent = asof ? `${asof} · updated automatically after every race` : "";
 }
 
 function headToHead() {
