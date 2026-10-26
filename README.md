@@ -45,11 +45,30 @@ uv run pytest
 Raw API responses are kept in `.cache/`, so reruns take about a second, and failed downloads and rate limits are retried.
 Empty answers are not cached, because they usually mean OpenF1 has not published that data yet.
 
+## Second check in C#
+
+[`csharp/F1Check`](csharp/F1Check) is a small .NET 8 tool that reads `telemetry.db` and runs the sample
+validation again, written from scratch in C#: missing values, physical ranges, time order, and dropouts
+split into feed and car. It then compares its counts with the `issues` table the Python pipeline wrote,
+check by check and lap by lap, and exits with an error if anything differs. Two independent
+implementations that agree are much harder to get wrong than one.
+
+```bash
+dotnet run --project csharp/F1Check -- telemetry.db
+dotnet test csharp/F1Check.Tests
+```
+
+On the 2026 US GP it checks all 42,898 samples and agrees with Python on every check: 124 feed dropouts,
+no car dropouts, nothing missing or out of range. The automatic update runs it before publishing, so a
+report is only published when both implementations agree. Ten xUnit tests cover the rules and the
+comparison, and a test on a deliberately changed database confirms the tool fails when the results differ.
+
 ## Automatic updates
 
 A scheduled GitHub Action ([`update.yml`](.github/workflows/update.yml)) runs the three commands every
 Monday, Tuesday and Wednesday morning, after the Sunday race. It picks the latest race that already has
-data, reloads the season and rebuilds the report. Only if the report changed does it commit and publish
+data, reloads the season, rebuilds the report and checks the validation again in C#. Only if both agree
+and the report changed does it commit and publish
 it, so weeks without a race leave the repository untouched. It can also be started by hand from the
 Actions tab.
 
@@ -171,7 +190,10 @@ f1telemetry/
   report.py      writes report.html from telemetry.db
   report.html    page template for the report
   __main__.py    command line for one race
-tests/           22 offline tests
+csharp/
+  F1Check/       .NET 8 tool that checks the validation again in C#
+  F1Check.Tests/ 10 xUnit tests
+tests/           22 offline Python tests
 docs/            screenshot for this README
 report.html      the generated report, published on GitHub Pages
 ```
@@ -201,11 +223,11 @@ report.html      the generated report, published on GitHub Pages
 
 ## Built with
 
-Python 3.12, pandas, numpy, SQLite, Plotly. 22 pytest tests run without internet and cover loading,
+Python 3.12, pandas, numpy, SQLite, Plotly; C# with .NET 8 and Microsoft.Data.Sqlite. 22 pytest tests run without internet and cover loading,
 retries and caching, validation, dropout classification, comparable laps, distance, tyre wear, lap
 comparison, braking zones, track position, race pace, prediction, backtest, cross-checks, weather, picking the
 latest race and the report.
-Every push runs ruff and the tests.
+Every push runs ruff, the Python tests and the 10 xUnit tests.
 
 ---
 

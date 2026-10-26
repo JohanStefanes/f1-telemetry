@@ -10,3 +10,12 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - run: uvx ruff@0.8.6 check .
       - run: uv run pytest
+
+  csharp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet test csharp/F1Check.Tests

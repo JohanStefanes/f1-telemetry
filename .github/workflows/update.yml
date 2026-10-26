@@ -19,11 +19,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
       - name: Load the latest race and the season
         run: |
           uv run python -m f1telemetry --year 2026 --drivers HUL BOR
           uv run python -m f1telemetry.season --year 2026
           uv run python -m f1telemetry.report
+      - name: Check the validation again in C#
+        # A second, independent implementation; if it disagrees with Python, nothing is published.
+        run: dotnet run --project csharp/F1Check -- telemetry.db
       - name: Publish if there is new data
         env:
           GH_TOKEN: ${{ github.token }}
