@@ -31,7 +31,9 @@ uv run python -m f1telemetry.report --title "2026 United States GP · Race"
 uv run pytest
 ```
 
-The first command downloads and stores the data. The second writes `report.html`, which you open in a browser.
+The first command downloads and stores the data. Raw API responses are kept in `.cache/`, so a rerun
+takes under a second instead of ~7; failed downloads and rate limits are retried. The second command
+writes `report.html`, which you open in a browser.
 
 ## Result: 2026 US GP, Hülkenberg vs Bortoleto (Audi)
 
@@ -73,7 +75,7 @@ measured centre line.
 ## Limits
 
 - About 4 samples per second: OpenF1's rate, far below the car's real sensor rate.
-- Distance is estimated from speed, not measured, so small offsets show up as spikes in the time gap at braking points.
+- Distance is estimated from speed, not measured. The report scales both laps to the same length so corners line up, but small bumps in the time gap at braking points remain.
 - Two drivers per run.
 
 ## Next steps
@@ -84,7 +86,7 @@ measured centre line.
 
 ## Built with
 
-Python 3.12, pandas, numpy, SQLite, Plotly. Seven pytest tests cover validation, dropout classification, distance, lap comparison and the report.
+Python 3.12, pandas, numpy, SQLite, Plotly. Ten pytest tests run without internet and cover loading, retries and caching, validation, dropout classification, distance, lap comparison and the report.
 
 ---
 

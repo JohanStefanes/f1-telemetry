@@ -1,8 +1,11 @@
 """Ingest, validate, store and compare F1 car telemetry."""
 import json
 import sqlite3
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -12,14 +15,35 @@ CHANNELS = ["Speed", "RPM", "nGear", "Throttle", "Brake", "DRS"]
 # Physical limits for an F1 car; anything outside is a sensor or transmission error
 # (OpenF1 reports 104 for throttle/brake when the value is invalid).
 LIMITS = {"Speed": (0, 380), "RPM": (0, 15500), "nGear": (0, 8), "Throttle": (0, 100), "Brake": (0, 100)}
+CACHE = Path(".cache")  # raw API responses; delete it to download again
+RETRIES = 4
 MAX_GAP_S = 1.0  # car data arrives at ~4 Hz; a longer gap is a dropout
 MATCH_S = 0.5  # gaps in different cars this close together are the same feed dropout
 
 
 def get(endpoint, **params):
-    url = f"{API}/{endpoint}?{urllib.parse.urlencode(params)}"
-    with urllib.request.urlopen(url, timeout=120) as r:
-        return pd.DataFrame(json.load(r))
+    """Fetch one OpenF1 endpoint. The raw JSON is kept in CACHE, so reruns do not download again."""
+    query = urllib.parse.urlencode(sorted(params.items()))
+    path = CACHE / f"{endpoint}_{query}.json"
+    if not path.exists():
+        raw = fetch(f"{API}/{endpoint}?{query}")
+        CACHE.mkdir(exist_ok=True)
+        path.with_suffix(".tmp").write_bytes(raw)
+        path.with_suffix(".tmp").replace(path)  # never leave a half-written file in the cache
+    return pd.DataFrame(json.loads(path.read_bytes()))
+
+
+def fetch(url):
+    """Download with retries: OpenF1 rate-limits (429) and occasionally times out."""
+    for attempt in range(RETRIES):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as r:
+                return r.read()
+        except (urllib.error.URLError, TimeoutError) as e:
+            client_error = isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429
+            if client_error or attempt == RETRIES - 1:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def find_session(year, location, session="Race"):

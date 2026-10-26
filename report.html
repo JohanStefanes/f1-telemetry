@@ -170,17 +170,30 @@ function sectors() {
 function telemetry() {
   sectors();
   const t = { [A]: D.traces[A][sel[A]], [B]: D.traces[B][sel[B]] };
-  const ca = clean(t[A]), cb = clean(t[B]);
-  const len = Math.min(ca.x[ca.x.length - 1], cb.x[cb.x.length - 1]);
+  const c = { [A]: clean(t[A]), [B]: clean(t[B]) };
+  // Distance is estimated, so the two laps come out a few metres different in length. Close each lap at the
+  // line (the stretch after its last sample, from its lap time) and scale both to the same length, so a
+  // corner sits at the same x for both cars and the gap ends at the real lap-time difference.
+  const end = {};
+  for (const d of D.drivers) {
+    const p = c[d], n = p.x.length - 1, lapTime = (lapRow(d, sel[d]) || {}).LapTimeS;
+    const tail = lapTime != null ? Math.max(0, lapTime - p.t[n]) : 0;
+    end[d] = p.x[n] + p.v[n] / 3.6 * tail;
+    p.x.push(end[d]); p.v.push(p.v[n]); p.t.push(p.t[n] + tail);
+    p.x.unshift(0); p.v.unshift(p.v[0]); p.t.unshift(0);  // both cars cross the line at 0 s, 0 m
+  }
+  const len = (end[A] + end[B]) / 2, k = { [A]: len / end[A], [B]: len / end[B] };
+  for (const d of D.drivers) c[d].x = c[d].x.map(x => x * k[d]);
+  const ca = c[A], cb = c[B];
   const grid = Array.from({ length: 500 }, (_, i) => len * i / 499);
   const delta = grid.map(x => interp(x, cb.x, cb.v) - interp(x, ca.x, ca.v));
   // Time gap at the same point on track: negative means B got there first.
   const gap = grid.map(x => interp(x, cb.x, cb.t) - interp(x, ca.x, ca.t));
   const rows = [["y", "Speed", "Speed (km/h)"], ["y3", "Throttle", "Throttle (%)"], ["y4", "Brake", "Brake"], ["y5", "nGear", "Gear"]];
   const traces = [];
-  for (const d of D.drivers) for (const [ax, k] of rows)
-    traces.push({ x: t[d].Distance, y: t[d][k], yaxis: ax, name: d, legendgroup: d, showlegend: ax === "y",
-      line: { color: color(d), width: 1.6, shape: k === "nGear" ? "hv" : "linear" },
+  for (const d of D.drivers) for (const [ax, key] of rows)
+    traces.push({ x: t[d].Distance.map(x => x == null ? null : x * k[d]), y: t[d][key], yaxis: ax, name: d, legendgroup: d, showlegend: ax === "y",
+      line: { color: color(d), width: 1.6, shape: key === "nGear" ? "hv" : "linear" },
       hovertemplate: `${d} %{y} @ %{x:.0f} m<extra></extra>` });
   traces.push({ x: grid, y: gap, yaxis: "y6", name: `Gap ${B} to ${A}`,
     line: { color: css("--delta"), width: 2 }, hovertemplate: `gap %{y:+.3f} s @ %{x:.0f} m<extra></extra>` });

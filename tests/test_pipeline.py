@@ -1,6 +1,11 @@
-import pandas as pd
+import io
+import urllib.error
 
-from f1telemetry.pipeline import add_distance, compare, validate
+import pandas as pd
+import pytest
+
+from f1telemetry import pipeline
+from f1telemetry.pipeline import add_distance, compare, load, validate
 
 
 def samples(**override):
@@ -89,3 +94,51 @@ def test_report_embeds_traces_and_comparison():
     assert data["traces"]["BOR"]["1"]["Speed"] == [270.0, None, 290.0, 300.0]  # NaN becomes null
     assert data["comparison"]["delta_s"] == 0.5
     assert "<title>Test GP</title>" in html
+
+
+def test_load_assigns_samples_to_laps_and_drops_the_rest(monkeypatch):
+    t = lambda s: (pd.Timestamp("2026-10-25T19:00:00Z") + pd.Timedelta(seconds=s)).isoformat()
+    api = {
+        "sessions": [{"session_key": 1, "date_start": t(0)}],
+        "drivers": [{"name_acronym": "HUL", "driver_number": 27}],
+        "laps": [  # lap 1 from the grid, lap 2 a normal lap, lap 3 out of the pits
+            {"lap_number": n, "date_start": t(start), "lap_duration": dur, "is_pit_out_lap": pit,
+             "duration_sector_1": 30.0, "duration_sector_2": 30.0, "duration_sector_3": 30.0}
+            for n, start, dur, pit in [(1, 10, 100, None), (2, 110, 90, False), (3, 200, 95, True)]],
+        "car_data": [{"date": t(s), "speed": 200, "rpm": 11000, "n_gear": 6, "throttle": 100, "brake": 0, "drs": 0}
+                     for s in (5, 10.5, 109.9, 110.2, 400)],  # 5 s is on the grid, 400 s after the last lap
+    }
+    monkeypatch.setattr(pipeline, "get", lambda endpoint, **_: pd.DataFrame(api[endpoint]))
+    samples, laps = load(2026, "Austin", "Race", ["HUL"])
+    assert samples["LapNumber"].tolist() == [1, 1, 2]
+    assert samples["TimeInLapS"].round(3).tolist() == [0.5, 99.9, 0.2]
+    assert samples["SessionTimeS"].tolist()[0] == 10.5
+    assert laps["IsAccurate"].tolist() == [False, True, False]
+
+
+def test_get_retries_rate_limits_and_caches_raw_data(monkeypatch, tmp_path):
+    calls = []
+
+    def urlopen(url, timeout):
+        calls.append(url)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(url, 429, "Too Many Requests", None, None)
+        return io.BytesIO(b'[{"lap_number": 1}]')
+
+    monkeypatch.setattr(pipeline, "CACHE", tmp_path)
+    monkeypatch.setattr(pipeline.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda s: None)
+    assert pipeline.get("laps", session_key=1).to_dict("records") == [{"lap_number": 1}]
+    assert pipeline.get("laps", session_key=1).to_dict("records") == [{"lap_number": 1}]  # from the cache
+    assert len(calls) == 2  # one rate-limited attempt, one success, nothing for the second call
+
+
+def test_get_does_not_retry_a_bad_request(monkeypatch, tmp_path):
+    def urlopen(url, timeout):
+        raise urllib.error.HTTPError(url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(pipeline, "CACHE", tmp_path)
+    monkeypatch.setattr(pipeline.urllib.request, "urlopen", urlopen)
+    with pytest.raises(urllib.error.HTTPError):
+        pipeline.get("laps", session_key=1)
+    assert not list(tmp_path.iterdir())
