@@ -5,3 +5,4 @@ __pycache__/
 .claude/
 bin/
 obj/
+matlab/*.csv

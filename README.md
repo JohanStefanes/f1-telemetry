@@ -58,6 +58,25 @@ dotnet run --project csharp/F1Check -- telemetry.db
 dotnet test csharp/F1Check.Tests
 ```
 
+## Braking zones in MATLAB
+
+[`matlab/`](matlab) finds the braking zones of both drivers' fastest laps again, written from scratch in MATLAB
+with the same rule as the Python report, and compares each driver's minimum speed in every zone.
+On the 2026 US GP it finds the same 7 zones as Python, at the same positions and speeds.
+
+![Braking zones: Hülkenberg vs Bortoleto, fastest laps, 2026 US GP](matlab/braking_zones.png)
+
+Export the two tables it needs, then run it in MATLAB (MATLAB Online works: upload the `matlab` folder)
+or in GNU Octave:
+
+```bash
+sqlite3 -header -csv telemetry.db "select Driver, LapNumber, Distance, Speed from samples" > matlab/samples.csv
+sqlite3 -header -csv telemetry.db "select Driver, LapNumber, LapTimeS, IsAccurate from laps" > matlab/laps.csv
+cd matlab && octave --no-gui --eval "test_corners; braking_zones('HUL', 'BOR');"
+```
+
+It prints one row per zone and saves `matlab/braking_zones.png`. `test_corners` runs the same synthetic lap as the Python test.
+
 On the 2026 US GP it checks all 42,898 samples and agrees with Python on every check: 124 feed dropouts,
 no car dropouts, nothing missing or out of range. The automatic update runs it before publishing, so a
 report is only published when both implementations agree. Ten xUnit tests cover the rules and the
@@ -193,6 +212,10 @@ f1telemetry/
 csharp/
   F1Check/       .NET 8 tool that checks the validation again in C#
   F1Check.Tests/ 10 xUnit tests
+matlab/
+  corners.m      braking zones of one lap, same rule as the Python report
+  braking_zones.m compares both drivers' fastest laps zone by zone and plots them
+  test_corners.m synthetic-lap test
 tests/           22 offline Python tests
 docs/            screenshot for this README
 report.html      the generated report, published on GitHub Pages
@@ -223,7 +246,7 @@ report.html      the generated report, published on GitHub Pages
 
 ## Built with
 
-Python 3.12, pandas, numpy, SQLite, Plotly; C# with .NET 8 and Microsoft.Data.Sqlite. 22 pytest tests run without internet and cover loading,
+Python 3.12, pandas, numpy, SQLite, Plotly; C# with .NET 8 and Microsoft.Data.Sqlite; MATLAB (runs in GNU Octave). 22 pytest tests run without internet and cover loading,
 retries and caching, validation, dropout classification, comparable laps, distance, tyre wear, lap
 comparison, braking zones, track position, race pace, prediction, backtest, cross-checks, weather, picking the
 latest race and the report.
